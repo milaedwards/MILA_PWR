@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from config import Config  # require your project config
-from plant_states import PlantState
-from ic_system import ICSystem
+from final_sim.plant_state import PlantState
+from final_sim.ic_system import ICSystem
 
 def make_load_profile():
     def prof(t: float) -> float:
@@ -76,4 +76,4 @@ def run(reactor, pressurizer, steamgen, turbine, early_stop=True, csv_out=False,
         data = np.column_stack([t, Th, Tc, Tavg, Ppri, Psec, Ppzr, Pcore, Pturb, rodpos, rho])
         header = "t,Th,Tc,Tavg,Ppri,Psec,Ppzr,Pcore,Pturb,rod,rho"
         np.savetxt(csv_name, data, delimiter=",", header=header, comments="")
-        print(f"[csv] wrote {csv_name]")
+        print(f"[csv] wrote {csv_name}")

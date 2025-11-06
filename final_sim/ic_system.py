@@ -1,16 +1,16 @@
 from dataclasses import dataclass, replace
 from typing import Optional
 from config import Config
-from .plant_state import PlantState
-from .interfaces import ReactorCoreLike, PressurizerLike, SteamGeneratorLike, TurbineCondenserLike
+from plant_state import PlantState
+from final_sim.stubs import ReactorCore, Pressurizer, SteamGenerator, TurbineCondenser
 
 @dataclass
 class ICSystem:
-    cfg: object | None = None
-    reactor: ReactorCoreLike
-    pressurizer: PressurizerLike
-    steamgen: SteamGeneratorLike
-    turbine: TurbineCondenserLike
+    reactor: ReactorCore
+    pressurizer: Pressurizer
+    steamgen: SteamGenerator
+    turbine: TurbineCondenser
+    Config: object | None = None
 
 
 def __post_init__(self):

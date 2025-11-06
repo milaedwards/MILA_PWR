@@ -1,6 +1,5 @@
 from dataclasses import dataclass, replace
 
-
 @dataclass
 class PlantState:
     # Time

@@ -2,8 +2,6 @@ import argparse
 import os
 from typing import Optional, Tuple
 import numpy as np
-import importlib
-from final_sim.reactor_core import ReactorSimulator
 
 # Choose a Matplotlib backend before importing pyplot (PyCharm's helper backend can break on some versions)
 import matplotlib
@@ -264,51 +262,6 @@ class TurbineStub:
 # Test harness
 # ---------------------------
 
-# Reactor loader helper
-def _make_reactor(cfg: Config, args):
-    """
-    If --reactor-module is provided, import that module and instantiate the class
-    (default name: ReactorCore). Otherwise return the local ReactorStub with any
-    tau/alpha overrides from CLI.
-    Supported constructors tried (in this order):
-      ReactorCore(cfg)
-      ReactorCore()
-      ReactorCore(Tc_init, P_turb_init, control_mode)
-      ReactorCore(Tc_init=..., P_turb_init=..., control_mode=...)
-    """
-    # If flags were provided, try to import a real reactor
-    if args is not None and getattr(args, "reactor_module", None):
-        mod_name = args.reactor_module
-        cls_name = getattr(args, "reactor_class", "ReactorCore")
-        try:
-            mod = importlib.import_module(mod_name)
-        except Exception as e:
-            raise RuntimeError(f"Could not import reactor module '{mod_name}': {e}")
-        if not hasattr(mod, cls_name):
-            raise RuntimeError(f"Module '{mod_name}' has no class '{cls_name}'")
-        cls = getattr(mod, cls_name)
-        # Try common constructors
-        for ctor in (
-            lambda: cls(cfg),
-            lambda: cls(),
-            lambda: cls(getattr(cfg, 'T_COLD_INIT_K', 553.0), 1.0, 'auto'),
-            lambda: cls(Tc_init=getattr(cfg, 'T_COLD_INIT_K', 553.0), P_turb_init=1.0, control_mode='auto'),
-        ):
-            try:
-                inst = ctor()
-                print(f"[harness] using reactor: {cls.__module__}.{cls.__name__}")
-                return inst
-            except TypeError:
-                continue
-        raise RuntimeError(f"Could not construct {mod_name}.{cls_name}; expose a constructor matching one of the tried signatures.")
-    # Fallback: use the stub with optional CLI overrides
-    return ReactorStub(
-        cfg,
-        tau_reactor_s=getattr(args, "tau_reactor", None) if args else None,
-        tau_th_s=getattr(args, "tau_th", None) if args else None,
-        alpha_T_dk_per_K=getattr(args, "alpha_T", None) if args else None,
-    )
-
 def simulate(n_steps: int = 120, plot: bool = True, csv_path: Optional[str] = None, args=None):
     cfg = Config()
 
@@ -316,7 +269,9 @@ def simulate(n_steps: int = 120, plot: bool = True, csv_path: Optional[str] = No
     ps = PlantState.init_default()
 
     # Instantiate stubs (pass-through CLI overrides if provided)
-    reactor = _make_reactor(cfg, args)
+    reactor = ReactorStub(cfg, tau_reactor_s=getattr(args, "tau_reactor", None),
+                          tau_th_s=getattr(args, "tau_th", None),
+                          alpha_T_dk_per_K=getattr(args, "alpha_T", None))
     sg = SGStub(cfg, tau_sg_s=getattr(args, "tau_sg", None),
                 tau_evap_s=getattr(args, "tau_evap", None),
                 h_fg_J_per_kg=getattr(args, "hfg", None),
@@ -337,7 +292,6 @@ def simulate(n_steps: int = 120, plot: bool = True, csv_path: Optional[str] = No
     dt = float(getattr(cfg, "dt", 0.1))
     t_final = float(getattr(cfg, "t_final", n_steps * dt))
     steps = int(t_final / dt)
-    print(f"[harness] reactor impl: {reactor.__class__.__module__}.{reactor.__class__.__name__}")
 
     # Time series for plotting/logging
     ts, Ths, Tcs, Tavgs = [], [], [], []
@@ -480,12 +434,6 @@ if __name__ == "__main__":
     parser.add_argument("--no-plots", action="store_true", help="Disable matplotlib plots")
     parser.add_argument("--steps", type=int, default=120, help="Number of nominal steps if t_final not set")
     parser.add_argument("--csv", type=str, default=None, help="Optional CSV output path")
-
-    # Swap-in a real reactor implementation
-    parser.add_argument("--reactor-module", type=str, default=None,
-                        help="Import path to reactor module (e.g., 'new_reactor_core' or 'final_sim.reactor_core')")
-    parser.add_argument("--reactor-class", type=str, default="ReactorCore",
-                        help="Class name inside the reactor module")
 
     # More-physical tuning knobs
     parser.add_argument("--tau-reactor", type=float, default=None, help="Reactor power time constant [s]")

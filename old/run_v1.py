@@ -48,11 +48,9 @@ Usage:
     --eta-e 0.33 --tau-turb 4 --tau-sec 8 --ksec 500
 """
 
-from dataclasses import dataclass
-
-from config import Config
-from final_sim.plant_state import PlantState
-from final_sim.ic_system import ICSystem
+from old_config import Config
+from plant_state import PlantState
+from ic_system import ICSystem
 
 
 # ---------------------------

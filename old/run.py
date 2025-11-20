@@ -3,7 +3,7 @@ import os
 from typing import Optional, Tuple
 import numpy as np
 import importlib
-from final_sim.reactor_core import ReactorSimulator
+# from subsystems.reactor_core import ReactorSimulator
 
 # Choose a Matplotlib backend before importing pyplot (PyCharm's helper backend can break on some versions)
 import matplotlib
@@ -50,11 +50,9 @@ Usage:
     --eta-e 0.33 --tau-turb 4 --tau-sec 8 --ksec 500
 """
 
-from dataclasses import dataclass
-
-from config import Config
-from final_sim.plant_state import PlantState
-from final_sim.ic_system import ICSystem
+from old.old_config import Config
+from plant_state import PlantState
+from ic_system import ICSystem
 
 
 # ---------------------------
@@ -76,8 +74,8 @@ class ReactorStub:
 
         # State
         self.rod_pos = float(getattr(cfg, "ROD_INSERT_INIT", 0.55))
-        self.P = float(getattr(cfg, "Q_CORE_NOMINAL_W", 3.4e9))
-        self.Th = float(getattr(cfg, "T_HOT_INIT_K", 595.0))
+        self.P_core = float(getattr(cfg, "Q_CORE_NOMINAL_W", 3.4e9))
+        self.T_hot = float(getattr(cfg, "T_HOT_INIT_K", 595.0))
 
         # Params
         self.tau_reactor = float(tau_reactor_s if tau_reactor_s is not None else getattr(cfg, "TAU_REACTOR_S", 6.0))
@@ -85,35 +83,47 @@ class ReactorStub:
         self.alpha_T = float(alpha_T_dk_per_K if alpha_T_dk_per_K is not None else getattr(cfg, "ALPHA_T_DK_PER_K", -1.0e-5))
         self.Tref = float(getattr(cfg, "TAVG_REF_BASE_K", 580.0))
 
-    def step(self, Tc_in: float, dt: float, P_turb: float, manual_rod_cmd: Optional[float]) -> Tuple[float, float, float, float]:
+    def step(
+        self,
+        *,
+        Tc_in: float,
+        P_turb: float,
+        rod_mode: str,
+        manual_rod_cmd: Optional[float],
+        dt: float,
+    ) -> Tuple[float, float]:
         self.call_count += 1
-        self.last_args = dict(Tc_in=Tc_in, dt=dt, P_turb=P_turb, manual_rod_cmd=manual_rod_cmd)
+        self.last_args = dict(Tc_in=Tc_in, P_turb=P_turb, rod_mode=rod_mode, manual_rod_cmd=manual_rod_cmd, dt=dt)
 
-        # Manual rod (0..1)
-        if manual_rod_cmd is not None:
+        # Apply manual rod if in manual mode
+        if rod_mode == "manual" and manual_rod_cmd is not None:
             self.rod_pos = float(max(0.0, min(1.0, manual_rod_cmd)))
 
-        # Target power with rod gain and small temperature feedback
+        # Target power with rod gain and mild temperature feedback
         P_nom = float(getattr(self.cfg, "Q_CORE_NOMINAL_W", 3.4e9))
         rod_gain = (1.0 - 0.3 * (self.rod_pos - 0.55))
-        Tavg = 0.5 * (self.Th + float(Tc_in))
-        rho_T = self.alpha_T * (Tavg - self.Tref)     # dk/k
-        temp_gain = max(0.0, 1.0 + rho_T)             # coarse effect
+        Tavg = 0.5 * (self.T_hot + float(Tc_in))
+        alpha_T = float(getattr(self.cfg, "ALPHA_T_DK_PER_K", -1.0e-5))
+        Tref = float(getattr(self.cfg, "TAVG_REF_BASE_K", 580.0))
+        rho_T = alpha_T * (Tavg - Tref)   # dk/k
+        temp_gain = max(0.0, 1.0 + rho_T)
 
         target = P_nom * max(0.2, float(P_turb)) * rod_gain * temp_gain
 
         # Power first-order dynamics
-        aP = max(0.0, min(1.0, dt / max(1e-6, self.tau_reactor)))
-        self.P += (target - self.P) * aP
+        tau_reactor = float(getattr(self.cfg, "TAU_REACTOR_S", 6.0))
+        aP = max(0.0, min(1.0, dt / max(1e-6, tau_reactor)))
+        self.P_core += (target - self.P_core) * aP
 
-        # Outlet temperature with first-order lag toward energy-balance value
+        # Outlet temperature approaches energy-balance value with a thermal lag
         cp = float(getattr(self.cfg, "CP_PRI_J_PER_KG_K", 5200.0))
-        mdot = float(getattr(self.cfg, "M_DOT_PRI", 1.0e4))
-        Th_eq = float(Tc_in + self.P / (mdot * cp))
-        aT = max(0.0, min(1.0, dt / max(1e-6, self.tau_th)))
-        self.Th += (Th_eq - self.Th) * aT
+        mdot = float(getattr(self.cfg, "M_DOT_PRI", getattr(self.cfg, "M_DOT_PRI_KG_S", 1.0e4)))
+        Th_eq = float(Tc_in + self.P_core / (mdot * cp)) if mdot > 1e-12 else float(Tc_in)
+        tau_th = float(getattr(self.cfg, "TAU_REACTOR_TH_S", 3.0))
+        aT = max(0.0, min(1.0, dt / max(1e-6, tau_th)))
+        self.T_hot += (Th_eq - self.T_hot) * aT
 
-        return float(self.Th), float(self.P), float(self.rod_pos), float(rho_T)
+        return float(self.T_hot), float(self.P_core)
 
 
 class SGStub:
@@ -130,8 +140,8 @@ class SGStub:
         self.last_args = {}
 
         # State
-        self.Tc = float(getattr(cfg, "T_COLD_INIT_K", 553.0))
-        self.msteam = float(getattr(cfg, "M_DOT_SEC", 9.0e3))
+        self.T_cold = float(getattr(cfg, "T_COLD_INIT_K", 553.0))
+        self.m_dot_steam = float(getattr(cfg, "M_DOT_SEC", 9.0e3))
 
         # Params
         self.tau_sg = float(tau_sg_s if tau_sg_s is not None else getattr(cfg, "TAU_SG_S", 6.0))
@@ -139,43 +149,53 @@ class SGStub:
         self.hfg = float(h_fg_J_per_kg if h_fg_J_per_kg is not None else getattr(cfg, "H_FG_SEC_J_PER_KG", 1.8e6))
         self.eta_evap = float(eta_evap if eta_evap is not None else getattr(cfg, "ETA_EVAP", 0.95))
 
-    def step(self, T_hot_K: float, P_core_W: float, m_dot_primary_kg_s: float, cp_J_per_kgK: float, dt: float):
+    def step(self, *, T_hot: float, m_dot_primary: float, dt: float) -> Tuple[float, float]:
+        """
+        Keyword-only parameters to match ICSystem:
+            self.steamgen.step(T_hot=..., m_dot_primary=..., dt=...)
+        Returns:
+            (T_cold_K, m_dot_steam_kg_s)
+        """
         self.call_count += 1
-        self.last_args = dict(T_hot_K=T_hot_K, P_core_W=P_core_W,
-                              m_dot_primary_kg_s=m_dot_primary_kg_s,
-                              cp_J_per_kgK=cp_J_per_kgK, dt=dt)
+        # Look up cp internally (not passed in)
+        cp_J_per_kgK = float(getattr(self.cfg, "CP_PRI_J_PER_KG_K", 5200.0))
+        # Record diagnostics for harness checks
+        self.last_args = dict(
+            T_hot=T_hot,
+            m_dot_primary_kg_s=m_dot_primary,
+            cp_J_per_kgK=cp_J_per_kgK,
+            dt=dt,
+        )
 
-        # Primary-side cold-leg temperature (first order toward energy balance)
-        if m_dot_primary_kg_s <= 1e-12:
-            T_cold_inst = float(T_hot_K)
-        else:
-            T_cold_inst = float(T_hot_K - P_core_W / (m_dot_primary_kg_s * cp_J_per_kgK))
-
+        # Primary-side cold-leg temperature: simple pinch model with first-order lag
+        pinch_K = float(getattr(self.cfg, "SG_PINCH_K", 20.0))
+        T_cold_inst = float(max(273.15, T_hot - pinch_K))
         aTc = max(0.0, min(1.0, dt / max(1e-6, self.tau_sg)))
-        self.Tc += (T_cold_inst - self.Tc) * aTc
+        self.T_cold += (T_cold_inst - self.T_cold) * aTc
 
-        # Steam generation rate (limited and filtered)
-        if self.hfg <= 0.0:
-            m_evap_inst = 0.0
-        else:
-            m_evap_inst = self.eta_evap * float(P_core_W) / self.hfg
-        m_evap_inst = max(0.0, min(float(m_dot_primary_kg_s), m_evap_inst))
+        # Steam generation from sensible heat removed on primary side
+        # Q_transfer ≈ m_dot_primary * cp * (T_hot - T_cold)
+        dT = max(0.0, float(T_hot) - float(self.T_cold))
+        Q_transfer_W = float(m_dot_primary) * cp_J_per_kgK * dT
+        m_evap_inst = 0.0 if self.hfg <= 0.0 else self.eta_evap * Q_transfer_W / self.hfg
 
+        # Limit by available primary flow (can't evaporate more than incoming mass flow)
+        m_evap_inst = max(0.0, min(float(m_dot_primary), m_evap_inst))
+
+        # First-order lag on steam generation
         aMe = max(0.0, min(1.0, dt / max(1e-6, self.tau_evap)))
-        self.msteam += (m_evap_inst - self.msteam) * aMe
+        self.m_dot_steam += (m_evap_inst - self.m_dot_steam) * aMe
 
-        # Secondary pressure is left to the turbine/condenser stub (more natural)
-        P_secondary = float(getattr(self.cfg, "P_SEC_INIT_PA", 6.0e6))
-
-        return float(self.Tc), float(self.msteam), P_secondary
+        return float(self.T_cold), float(self.m_dot_steam)
 
 
 class PressurizerStub:
     """
-    Pressurizer PI with:
-      - Deadband on error
-      - Anti-windup clamped integrator
-      - First-order pressure plant: P -> P_target = P_meas + Kplant*(heater - spray)
+    Pressurizer PI (new API):
+      - Inputs: T_hot_K, T_cold_K, dt
+      - Internal state keeps P (primary/pzr pressure) and level
+      - PI controller toward P_set with deadband and anti-windup
+      - First-order pressure plant; optional thermal coupling to temps
     """
     def __init__(self, cfg: Config, kp: float = None, ki: float = None, deadband_Pa: float = None, tau_pzr_s: float = None, Kplant_Pa: float = None):
         self.cfg = cfg
@@ -192,31 +212,39 @@ class PressurizerStub:
         self.tau = float(tau_pzr_s if tau_pzr_s is not None else getattr(cfg, "PZR_TAU_S", 5.0))
         self.Kplant = float(Kplant_Pa if Kplant_Pa is not None else getattr(cfg, "PZR_KPLANT_PA", 1.5e6))
 
+        self.alpha_th = float(getattr(cfg, "PZR_ALPHA_THERM", 0.0))  # Pa/K thermal coupling
+        self.Tref = float(getattr(cfg, "T_HOT_INIT_K", 595.0))
+
         self.P_set = float(getattr(cfg, "P_PRI_SET", getattr(cfg, "P_PRI_INIT_PA", 15.5e6)))
 
-    def step(self, dt: float, P_primary_Pa: float, T_hot_K: float, T_spray_K: float):
+    def step(self, T_hot: float, T_cold: float, dt: float):
         self.call_count += 1
-        self.last_args = dict(dt=dt, P_primary_Pa=P_primary_Pa, T_hot_K=T_hot_K, T_spray_K=T_spray_K)
+        self.last_args = dict(T_hot_K=T_hot, T_cold_K=T_cold, dt=dt)
 
-        e = self.P_set - float(P_primary_Pa)
+        # Error relative to setpoint using internal measured pressure
+        e = self.P_set - float(self.P)
         if abs(e) < self.db:
             e = 0.0
 
-        # PI control
+        # PI control with anti-windup
         self.I += self.ki * e * dt
-        self.I = max(-1.0, min(1.0, self.I))    # anti-windup
+        self.I = max(-1.0, min(1.0, self.I))
         u = self.kp * e + self.I
 
+        # Heater/spray surrogate (0..1); we don't expose these externally
         heater = max(0.0, min(1.0, u))
         spray = max(0.0, min(1.0, -u))
 
-        # Plant: target P around measured P_primary_Pa
-        P_target = float(P_primary_Pa) + self.Kplant * (heater - spray)
+        # Plant model: target pressure around current internal P, plus thermal effect of hot+cold leg mix
+        T_mix = 0.5 * (float(T_hot) + float(T_cold))
+        P_target = float(self.P) + self.Kplant * (heater - spray) + self.alpha_th * (T_mix - self.Tref)
+
+        # First-order pressure response
         aP = max(0.0, min(1.0, dt / max(1e-6, self.tau)))
         self.P += (P_target - self.P) * aP
 
-        level = 0.0
-        return float(self.P), float(level), float(heater), float(spray)
+        level = 0.0  # keep simple
+        return float(self.P)
 
 
 class TurbineStub:
@@ -239,23 +267,37 @@ class TurbineStub:
         self.P_e = 0.0
         self.P_sec = float(getattr(cfg, "P_SEC_INIT_PA", 6.0e6))
 
-    def step(self, m_dot_steam_kg_s: float, T_steam_K: float, P_inlet_Pa: float, P_back_Pa: float, load_cmd_pu: float, dt: float):
+    def step(
+        self,
+        *,
+        m_dot_steam: float,
+        T_steam: float,
+        P_secondary: float,
+        load_demand: float,
+        dt: float,
+    ) -> Tuple[float, float]:
         self.call_count += 1
-        self.last_args = dict(m_dot_steam_kg_s=m_dot_steam_kg_s, T_steam_K=T_steam_K,
-                              P_inlet_Pa=P_inlet_Pa, P_back_Pa=P_back_Pa,
-                              load_cmd_pu=load_cmd_pu, dt=dt)
+        self.last_args = dict(
+            m_dot_steam_kg_s=m_dot_steam,
+            T_steam=T_steam,
+            P_secondary=P_secondary,
+            load_demand=load_demand,
+            dt=dt,
+        )
 
-        # Power with first-order lag to demand
+        # Electrical power tracks demand with a first-order lag
         P_nom = float(getattr(self.cfg, "Q_CORE_NOMINAL_W", 3.4e9))
-        P_dem = float(load_cmd_pu) * self.eta * P_nom
+        P_dem = float(load_demand) * self.eta * P_nom
         a = max(0.0, min(1.0, dt / max(1e-6, self.tau_turb)))
         self.P_e += (P_dem - self.P_e) * a
 
-        # Secondary pressure driven by steam flow mismatch
-        m_demand = float(load_cmd_pu) * float(getattr(self.cfg, "M_DOT_SEC", 9.0e3))
-        P_target = float(getattr(self.cfg, "P_SEC_INIT_PA", 6.0e6)) + self.Ksec * (float(m_dot_steam_kg_s) - m_demand)
+        # Secondary pressure relaxes toward a target based on steam flow mismatch
+        m_demand = float(load_demand) * float(getattr(self.cfg, "M_DOT_SEC", 9.0e3))
+        P_nom_sec = float(getattr(self.cfg, "P_SEC_INIT_PA", 6.0e6))
+        P_target = P_nom_sec + self.Ksec * (float(m_dot_steam) - m_demand)
         aP = max(0.0, min(1.0, dt / max(1e-6, self.tau_sec)))
-        self.P_sec += (P_target - self.P_sec) * aP
+        P_sec2 = float(P_secondary + (P_target - P_secondary) * aP)
+        self.P_sec = P_sec2
 
         return float(self.P_e), float(self.P_sec)
 
@@ -451,6 +493,10 @@ def simulate(n_steps: int = 120, plot: bool = True, csv_path: Optional[str] = No
             if abs(float(last_dt) - dt) > 1e-9:
                 problems.append(f"{name}: dt mismatch (got {last_dt}, expected {dt})")
 
+    # 2b) Pressurizer received both leg temperatures
+    if "T_cold_K" not in pzr.last_args:
+        problems.append("pressurizer: missing T_cold_K argument")
+
     # 3) Manual rod command actually reached the reactor
     expected_cmd = 0.80  # final rod profile value
     last_cmd = reactor.last_args.get("manual_rod_cmd", None)
@@ -483,7 +529,7 @@ if __name__ == "__main__":
 
     # Swap-in a real reactor implementation
     parser.add_argument("--reactor-module", type=str, default=None,
-                        help="Import path to reactor module (e.g., 'new_reactor_core' or 'final_sim.reactor_core')")
+                        help="Import path to reactor module (e.g., 'new_reactor_core' or 'subsystems.reactor_core')")
     parser.add_argument("--reactor-class", type=str, default="ReactorCore",
                         help="Class name inside the reactor module")
 

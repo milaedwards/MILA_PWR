@@ -6,7 +6,6 @@ from config import Config
 from plant_state import PlantState
 from ic_system import ICSystem
 
-
 def make_load_profile(load_demand_pu: float):
     """
     Build a turbine-load profile function.
@@ -53,18 +52,24 @@ def ask_user_inputs():
     if rod_mode not in ("auto", "manual"):
         rod_mode = "manual"
 
-    # Manual rod command (only if in manual mode)
-    manual_cmd = 0.0
+    # Initial rod insertion (only if in manual mode)
+    rod_insert_pu = None
     if rod_mode == "manual":
         try:
             cmd_str = input(
-                "Enter manual rod speed (fraction of stroke per second, e.g. 0.0 for hold, -0.001 for small withdrawal): "
+                "Enter initial rod insertion (0-100%, e.g. 50 for mid-stroke, 0 for fully withdrawn, 100 for fully inserted): "
             ).strip()
-            manual_cmd = float(cmd_str) if cmd_str else 0.0
+            if cmd_str:
+                percent = float(cmd_str)
+            else:
+                percent = 50.0  # default mid-stroke if user just hits Enter
+            rod_insert_pu = float(np.clip(percent / 100.0, 0.0, 1.0))
         except ValueError:
-            manual_cmd = 0.0
+            rod_insert_pu = 0.5  # fallback to mid-stroke
+    else:
+        rod_insert_pu = None
 
-    return load_demand, rod_mode, manual_cmd
+    return load_demand, rod_mode, rod_insert_pu
 
 
 def build_default_subsystems(cfg: Config):
@@ -108,7 +113,7 @@ def run(
     turbine,
     load_demand_pu: float = 1.0,
     rod_mode: str = "manual",
-    rod_cmd_manual_pu: float = 0.0,
+    rod_insert_pu: float = 0.5,
     early_stop: bool = True,
     csv_out: bool = False,
     csv_name: str = "run_log.csv",
@@ -123,6 +128,14 @@ def run(
     """
     cfg = Config() if cfg is None else cfg
     ps = PlantState.init_from_config(cfg)
+
+    # Apply initial rod insertion if in manual mode; rods are then held fixed
+    if rod_mode == "manual" and rod_insert_pu is not None:
+        ps = replace(ps, rod_pos_pu=float(rod_insert_pu), rod_mode="manual", rod_cmd_manual_pu=0.0)
+    else:
+        # Ensure rod_cmd_manual_pu is defined even if not used in auto mode
+        ps = replace(ps, rod_mode=rod_mode, rod_cmd_manual_pu=0.0)
+
     ic = ICSystem(
         reactor=reactor,
         steamgen=steamgen,
@@ -131,7 +144,6 @@ def run(
     )
 
     load = make_load_profile(load_demand_pu)
-    rod = make_rod_profile(rod_cmd_manual_pu)
 
     N = int(cfg.t_final / cfg.dt) + 1
     t = np.zeros(N)
@@ -168,7 +180,8 @@ def run(
             ps,
             load_demand_pu=float(load(ps.t_s)),
             rod_mode=rod_mode,
-            rod_cmd_manual_pu=float(rod(ps.t_s)),
+            # In manual mode we hold rods fixed at the initial insertion (manual speed = 0.0)
+            rod_cmd_manual_pu=0.0,
         )
 
         # Call the coupled plant model
@@ -209,7 +222,10 @@ def run(
 
     # Commands as functions of time
     load_plot = np.array([load(ti) for ti in t_plot])
-    rod_cmd_plot = np.array([rod(ti) for ti in t_plot])
+    if rod_mode == "manual" and rod_insert_pu is not None:
+        rod_cmd_plot = np.full_like(t_plot, rod_insert_pu, dtype=float)
+    else:
+        rod_cmd_plot = np.zeros_like(t_plot)
 
     # Normalizations
     Pcore_nom = getattr(cfg, "Q_CORE_NOMINAL_W", 1.0)
@@ -268,7 +284,7 @@ def run(
     # 4. Rod input / position vs time
     ax = axes[1, 0]
     ax.plot(t_plot, rodpos_plot, label="rod_pos [pu]")
-    ax.plot(t_plot, rod_cmd_plot, label="rod_cmd [pu]")
+    ax.plot(t_plot, rod_cmd_plot, label="rod_setpoint [pu]")
     ax.set_title("Rod Command and Position")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Per-unit")
@@ -340,7 +356,7 @@ def main():
     reactor, steamgen, turbine = build_default_subsystems(cfg)
     # pressurizer = None  # placeholder if a pressurizer model is added later
 
-    load_demand_pu, rod_mode, rod_cmd_manual_pu = ask_user_inputs()
+    load_demand_pu, rod_mode, rod_insert_pu = ask_user_inputs()
 
     run(
         reactor=reactor,
@@ -348,7 +364,7 @@ def main():
         turbine=turbine,
         load_demand_pu=load_demand_pu,
         rod_mode=rod_mode,
-        rod_cmd_manual_pu=rod_cmd_manual_pu,
+        rod_insert_pu=rod_insert_pu,
         early_stop=True,
         csv_out=False,
         cfg=cfg,

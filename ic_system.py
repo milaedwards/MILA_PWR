@@ -131,7 +131,6 @@ class ICSystem:
             inlet_t=ps.T_steam_K,
             inlet_p=ps.P_secondary_Pa,
             m_dot_steam=ps.m_dot_steam_kg_s,
-            power_supplied=P_turb_supplied_MW,
             power_dem=P_dem_MW,
             dt=dt,
         )

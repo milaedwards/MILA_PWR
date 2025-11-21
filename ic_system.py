@@ -142,8 +142,25 @@ class ICSystem:
         # runaway insertion loop; if the turbine briefly overshoots, allowing
         # the higher feedback prevents the controller from demanding less than
         # what the grid is already getting.
-        P_turb_feedback_pu = ps.P_turbine_MW / max(self.cfg.P_RATED_MWe, 1.0)
-        P_turb_pu = max(float(ps.load_demand_pu), float(P_turb_feedback_pu))
+        #P_turb_feedback_pu = ps.P_turbine_MW / max(self.cfg.P_RATED_MWe, 1.0)
+        #P_turb_pu = max(float(ps.load_demand_pu), float(P_turb_feedback_pu))
+
+        # Drive the reactor temperature program primarily from the operator's
+        # requested load, but allow a small headroom above the request so the
+        # rods can settle if turbine power runs slightly high. This avoids the
+        # setpoint collapsing when the turbine sags (by honoring the demand as
+        # a floor) while also preventing spikes from pulling the setpoint far
+        # above the operator's target.
+        load_demand_pu = float(ps.load_demand_pu)
+        P_turb_meas_pu = float(ps.P_turbine_MW) / float(cfg.P_RATED_MWe)
+
+        # Allow at most 5% headroom above the operator request when the
+        # measured turbine output exceeds it; otherwise stick to the demand.
+        headroom_pu = 0.05
+        P_turb_pu = min(
+            load_demand_pu + headroom_pu,
+            max(load_demand_pu, P_turb_meas_pu),
+        )
 
         T_hot, P_core = self.reactor.step(
             Tc_in=ps.T_cold_K,

@@ -55,6 +55,14 @@ class TurbineModel:
         power_error = power_supplied - power_dem        # [MW]
         power_percent_change = power_error / denom      # [-]
 
+        print(
+            f"[Turb] power_supplied={power_supplied:7.1f} MW, "
+            f"power_dem={power_dem:7.1f} MW, "
+            f"err={power_error:7.1f} MW, "
+            f"pct_err={100 * power_percent_change:6.2f}%, "
+            f"m_dot={m_dot_steam:7.1f}"
+        )
+
         # ----------- Flow limits per NRC rules ------------
         m_dot_step = m_dot_steam * 0.10 * dt  # [kg/s] 10%/s allowed change
         m_dot_ramp = m_dot_steam * 0.05 * dt / 60.0  # [kg/s] 5%/min ramp

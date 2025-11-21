@@ -6,15 +6,24 @@ from config import Config
 from plant_state import PlantState
 from ic_system import ICSystem
 
-def make_load_profile(load_demand_pu: float):
-    """
-    Build a turbine-load profile function.
+def make_load_profile(final_load_pu: float, t_step: float, initial_load_pu: float):
+    """Build a turbine-load profile function with a step at t_step.
 
-    For now this is just a constant load, but you can later replace this
-    with more complex time-dependent logic (steps, ramps, etc.).
+    Parameters
+    ----------
+    final_load_pu : float
+        The per-unit load after the step time.
+    t_step : float
+        Time (s) at which the load changes from the initial value to the
+        final value.
+    initial_load_pu : float
+        The per-unit load before the step time. This will typically be the
+        nominal/initial plant load from the PlantState.
     """
     def prof(t: float) -> float:
-        return load_demand_pu
+        if t < t_step:
+            return initial_load_pu
+        return final_load_pu
 
     return prof
 
@@ -104,7 +113,7 @@ def run(
     rod_mode: str = "manual",
     rod_step_pu: float = 0.0,
     early_stop: bool = True,
-    csv_out: bool = False,
+    csv_out: bool = True,
     csv_name: str = "run_log.csv",
     cfg=None,
 ):
@@ -124,7 +133,9 @@ def run(
 
     # Time (s) at which the one-shot rod step command should be applied.
     rod_step_t_start = 10.0
-    # Internal flag to ensure we send the step command only once.
+    # Time (s) at which the turbine load demand should change.
+    load_step_t_start = 10.0
+    # Internal flag to ensure we send the rod step command only once.
     rod_step_sent = False
 
     ic = ICSystem(
@@ -134,7 +145,14 @@ def run(
         cfg=cfg,
     )
 
-    load = make_load_profile(load_demand_pu)
+    # Build a load profile that holds the initial plant load until
+    # load_step_t_start, then steps to the user-requested load_demand_pu.
+    initial_load_pu = ps.load_demand_pu
+    load = make_load_profile(
+        final_load_pu=load_demand_pu,
+        t_step=load_step_t_start,
+        initial_load_pu=initial_load_pu,
+    )
 
     N = int(cfg.t_final / cfg.dt) + 1
     t = np.zeros(N)

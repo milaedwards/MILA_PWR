@@ -11,7 +11,7 @@ except ImportError:
 class Config:
     # ---------------- Simulation ----------------
     dt: float = 0.1              # [s] integration time step
-    t_final: float = 300.0       # [s] total simulation time
+    t_final: float = 30.0       # [s] total simulation time
     log_every_n: int = 1         # [-] print/log interval
 
     # ---------------- Plant-level RCS ----------------

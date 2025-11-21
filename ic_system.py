@@ -133,7 +133,17 @@ class ICSystem:
         # avoids a self-reinforcing loop where falling turbine power lowers
         # the temperature setpoint, causing the rods to insert further instead
         # of restoring power.
-        P_turb_pu = float(ps.load_demand_pu)
+        #P_turb_pu = float(ps.load_demand_pu)
+
+        # Drive the reactor temperature program primarily from the operator's
+        # load demand, but do not let the reference collapse below what the
+        # turbine is actually producing. If turbine power temporarily sags,
+        # falling all the way to the measured output would recreate the
+        # runaway insertion loop; if the turbine briefly overshoots, allowing
+        # the higher feedback prevents the controller from demanding less than
+        # what the grid is already getting.
+        P_turb_feedback_pu = ps.P_turbine_MW / max(self.cfg.P_RATED_MWe, 1.0)
+        P_turb_pu = max(float(ps.load_demand_pu), float(P_turb_feedback_pu))
 
         T_hot, P_core = self.reactor.step(
             Tc_in=ps.T_cold_K,

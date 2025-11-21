@@ -324,4 +324,5 @@ class SG:
             "T_rxi_new": T_rxi_new,    # [K]
             "p_s_new": p_s_new,        # [Pa]
             "T_s_new": T_s_new,        # [K]
+            "M_dot_stm_new": M_dot,  # [kg/s]
         }

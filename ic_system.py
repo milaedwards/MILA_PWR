@@ -122,11 +122,18 @@ class ICSystem:
 
         # Use actual turbine power (per-unit) as the input to the reactor
         # power program, rather than the operator load demand.
-        P_rated_MWe = getattr(self.cfg, "P_RATED_MWe", 1000.0)
-        if P_rated_MWe > 0.0:
-            P_turb_pu = ps.P_turbine_MW / P_rated_MWe
-        else:
-            P_turb_pu = 1.0
+        #P_rated_MWe = getattr(self.cfg, "P_RATED_MWe", 1000.0)
+        #if P_rated_MWe > 0.0:
+        #    P_turb_pu = ps.P_turbine_MW / P_rated_MWe
+        #else:
+        #    P_turb_pu = 1.0
+
+        # Drive the reactor against the operator's load demand (per-unit)
+        # rather than the currently produced turbine power. Using the demand
+        # avoids a self-reinforcing loop where falling turbine power lowers
+        # the temperature setpoint, causing the rods to insert further instead
+        # of restoring power.
+        P_turb_pu = float(ps.load_demand_pu)
 
         T_hot, P_core = self.reactor.step(
             Tc_in=ps.T_cold_K,
@@ -220,11 +227,11 @@ class ICSystem:
         # Demanded electrical power in MW from per-unit load demand
         P_dem_MW = ps.load_demand_pu * self.cfg.P_RATED_MWe
 
-        print(
-            f"t={ps.t_s:6.1f} s | load_pu={ps.load_demand_pu:5.3f} "
-            f"P_dem={P_dem_MW:7.1f} MW | P_turb={ps.P_turbine_MW:7.1f} MW | "
-            f"m_dot={ps.m_dot_steam_kg_s:7.1f} kg/s | P_sec={ps.P_secondary_Pa / 1e6:5.2f} MPa"
-        )
+        #print(
+        #    f"t={ps.t_s:6.1f} s | load_pu={ps.load_demand_pu:5.3f} "
+        #    f"P_dem={P_dem_MW:7.1f} MW | P_turb={ps.P_turbine_MW:7.1f} MW | "
+        #    f"m_dot={ps.m_dot_steam_kg_s:7.1f} kg/s | P_sec={ps.P_secondary_Pa / 1e6:5.2f} MPa"
+        #)
 
         P_turb_MW, m_dot_steam = self.turbine.step(
             inlet_t=ps.T_steam_K,

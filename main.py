@@ -19,19 +19,6 @@ def make_load_profile(load_demand_pu: float):
     return prof
 
 
-def make_rod_profile(rod_cmd_manual_pu: float):
-    """
-    Build a manual rod-command profile function.
-
-    For now this is constant in time; later you can make this time-dependent
-    if you want scripted transients instead of a single user setting.
-    """
-    def prof(t: float) -> float:
-        return rod_cmd_manual_pu
-
-    return prof
-
-
 def ask_user_inputs():
     """
     Prompt the user for turbine load and rod-control settings.
@@ -52,24 +39,26 @@ def ask_user_inputs():
     if rod_mode not in ("auto", "manual"):
         rod_mode = "manual"
 
-    # Initial rod insertion (only if in manual mode)
-    rod_insert_pu = None
+    # Rod insertion step (only if in manual mode), expressed in percentage points.
+    # For example, entering 5 means "insert rods by 5% of full stroke", so if the
+    # core starts at 57% insertion it will move toward ~62%.
+    rod_step_pu = 0.0
     if rod_mode == "manual":
         try:
             cmd_str = input(
-                "Enter initial rod insertion (0-100%, e.g. 50 for mid-stroke, 0 for fully withdrawn, 100 for fully inserted): "
+                "Enter rod insertion step (percentage points, e.g. 5 for +5% insertion, -5 for 5% withdrawal, 0 for no motion): "
             ).strip()
             if cmd_str:
-                percent = float(cmd_str)
+                percent_step = float(cmd_str)
             else:
-                percent = 50.0  # default mid-stroke if user just hits Enter
-            rod_insert_pu = float(np.clip(percent / 100.0, 0.0, 1.0))
+                percent_step = 0.0  # default: no motion
+            rod_step_pu = percent_step / 100.0
         except ValueError:
-            rod_insert_pu = 0.5  # fallback to mid-stroke
+            rod_step_pu = 0.0  # fallback: no motion
     else:
-        rod_insert_pu = None
+        rod_step_pu = 0.0
 
-    return load_demand, rod_mode, rod_insert_pu
+    return load_demand, rod_mode, rod_step_pu
 
 
 def build_default_subsystems(cfg: Config):
@@ -113,7 +102,7 @@ def run(
     turbine,
     load_demand_pu: float = 1.0,
     rod_mode: str = "manual",
-    rod_insert_pu: float = 0.5,
+    rod_step_pu: float = 0.0,
     early_stop: bool = True,
     csv_out: bool = False,
     csv_name: str = "run_log.csv",
@@ -129,12 +118,14 @@ def run(
     cfg = Config() if cfg is None else cfg
     ps = PlantState.init_from_config(cfg)
 
-    # Apply initial rod insertion if in manual mode; rods are then held fixed
-    if rod_mode == "manual" and rod_insert_pu is not None:
-        ps = replace(ps, rod_pos_pu=float(rod_insert_pu), rod_mode="manual", rod_cmd_manual_pu=0.0)
-    else:
-        # Ensure rod_cmd_manual_pu is defined even if not used in auto mode
-        ps = replace(ps, rod_mode=rod_mode, rod_cmd_manual_pu=0.0)
+    # Set rod mode and initialize manual command to zero; the ICSystem will interpret
+    # rod_cmd_manual_pu as a one-shot delta insertion, not a speed profile.
+    ps = replace(ps, rod_mode=rod_mode, rod_cmd_manual_pu=0.0)
+
+    # Time (s) at which the one-shot rod step command should be applied.
+    rod_step_t_start = 10.0
+    # Internal flag to ensure we send the step command only once.
+    rod_step_sent = False
 
     ic = ICSystem(
         reactor=reactor,
@@ -155,6 +146,7 @@ def run(
     # Ppzr = np.zeros(N)  # reserved for future pressurizer model
     Pcore = np.zeros(N)
     Pturb = np.zeros(N)
+    m_steam = np.zeros(N)
     rodpos = np.zeros(N)
     rho = np.zeros(N)
     dTavg = np.zeros(N)
@@ -169,19 +161,29 @@ def run(
         Ppri[k] = ps.P_primary_Pa
         Psec[k] = ps.P_secondary_Pa
         # Ppzr[k] = ps.pzr_pressure_Pa  # requires pressurizer / pzr_pressure_Pa field
-        Pcore[k] = ps.P_core_W
-        Pturb[k] = ps.P_turbine_W
+        Pcore[k] = ps.P_core_MW
+        Pturb[k] = ps.P_turbine_MW
+        m_steam[k] = ps.m_dot_steam_kg_s
         rodpos[k] = ps.rod_pos_pu
         rho[k] = ps.rho_reactivity_dk
 
         # Advance time and apply user commands
         ps = ps.copy_advance_time(cfg.dt).clip_invariants()
+        # Determine one-shot rod step command (delta insertion) if in manual mode.
+        if rod_mode == "manual":
+            if (not rod_step_sent) and abs(rod_step_pu) > 0.0 and ps.t_s >= rod_step_t_start:
+                # Issue a single "insert/withdraw by X%" command in per-unit of stroke.
+                manual_cmd = rod_step_pu
+                rod_step_sent = True
+            else:
+                manual_cmd = 0.0
+        else:
+            manual_cmd = 0.0
         ps = replace(
             ps,
             load_demand_pu=float(load(ps.t_s)),
             rod_mode=rod_mode,
-            # In manual mode we hold rods fixed at the initial insertion (manual speed = 0.0)
-            rod_cmd_manual_pu=0.0,
+            rod_cmd_manual_pu=manual_cmd,
         )
 
         # Call the coupled plant model
@@ -217,18 +219,21 @@ def run(
     Psec_plot = Psec[:n_steps]
     Pcore_plot = Pcore[:n_steps]
     Pturb_plot = Pturb[:n_steps]
+    m_steam_plot = m_steam[:n_steps]
     rodpos_plot = rodpos[:n_steps]
     rho_plot = rho[:n_steps]
 
     # Commands as functions of time
     load_plot = np.array([load(ti) for ti in t_plot])
-    if rod_mode == "manual" and rod_insert_pu is not None:
-        rod_cmd_plot = np.full_like(t_plot, rod_insert_pu, dtype=float)
+    # For rods, plot the requested delta-insertion command (per-unit of stroke).
+    if rod_mode == "manual" and abs(rod_step_pu) > 0.0:
+        # Show a step in the commanded insertion starting at rod_step_t_start.
+        rod_cmd_plot = np.where(t_plot >= rod_step_t_start, rod_step_pu, 0.0)
     else:
         rod_cmd_plot = np.zeros_like(t_plot)
 
     # Normalizations
-    Pcore_nom = getattr(cfg, "Q_CORE_NOMINAL_W", 1.0)
+    Pcore_nom = getattr(cfg, "Q_CORE_NOMINAL_MW", 1.0)
     if Pcore_nom <= 0.0:
         Pcore_nom = 1.0
     Pcore_norm = Pcore_plot / Pcore_nom
@@ -273,8 +278,8 @@ def run(
 
     # 3. Powers vs time (absolute)
     ax = axes[0, 2]
-    ax.plot(t_plot, Pcore_plot / 1e6, label="P_core [MWt]")
-    ax.plot(t_plot, Pturb_plot / 1e6, label="P_turbine [MWe]")
+    ax.plot(t_plot, Pcore_plot, label="P_core [MWt]")
+    ax.plot(t_plot, Pturb_plot, label="P_turbine [MWe]")
     ax.set_title("Powers")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Power [MW]")
@@ -284,10 +289,10 @@ def run(
     # 4. Rod input / position vs time
     ax = axes[1, 0]
     ax.plot(t_plot, rodpos_plot, label="rod_pos [pu]")
-    ax.plot(t_plot, rod_cmd_plot, label="rod_setpoint [pu]")
+    ax.plot(t_plot, rod_cmd_plot, label="rod_step_cmd [pu]")
     ax.set_title("Rod Command and Position")
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Per-unit")
+    ax.set_ylabel("Per-unit (position / fraction of stroke)")
     ax.legend()
     ax.grid(True)
 
@@ -309,10 +314,11 @@ def run(
     ax.legend()
     ax.grid(True)
 
-    # 7. Load demand vs time
+    # 7. Load demand vs normalized turbine power vs time
     ax = axes[2, 0]
     ax.plot(t_plot, load_plot, label="load demand [pu]")
-    ax.set_title("Load Demand")
+    ax.plot(t_plot, Pturb_norm, label="P_turbine / P_turb_nom")
+    ax.set_title("Load Demand vs Turbine Power")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Per-unit")
     ax.legend()
@@ -327,12 +333,12 @@ def run(
     ax.legend()
     ax.grid(True)
 
-    # 9. Normalized turbine power vs time
+    # 9. Steam mass flow vs time
     ax = axes[2, 2]
-    ax.plot(t_plot, Pturb_norm, label="P_turbine / P_turb_nom")
-    ax.set_title("Normalized Turbine Power")
+    ax.plot(t_plot, m_steam_plot, label="m_dot_steam [kg/s]")
+    ax.set_title("Steam Mass Flow")
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Per-unit")
+    ax.set_ylabel("Mass flow [kg/s]")
     ax.legend()
     ax.grid(True)
 
@@ -341,12 +347,23 @@ def run(
 
     if csv_out:
         data = np.column_stack(
-            [t, Th, Tc, Tavg, Ppri, Psec, Pcore, Pturb, rodpos, rho]
+            [
+                t_plot,
+                Th_plot,
+                Tc_plot,
+                Tavg_plot,
+                Ppri_plot,
+                Psec_plot,
+                Pcore_plot,
+                Pturb_plot,
+                rodpos_plot,
+                rho_plot,
+                m_steam_plot,
+            ]
         )
-        header = "t,Th,Tc,Tavg,Ppri,Psec,Pcore,Pturb,rod,rho"
+        header = "t,Th,Tc,Tavg,Ppri,Psec,Pcore,Pturb,rod,rho,m_dot_steam"
         np.savetxt(csv_name, data, delimiter=",", header=header, comments="")
         print(f"[csv] wrote {csv_name}")
-
 
 def main():
     """
@@ -356,7 +373,7 @@ def main():
     reactor, steamgen, turbine = build_default_subsystems(cfg)
     # pressurizer = None  # placeholder if a pressurizer model is added later
 
-    load_demand_pu, rod_mode, rod_insert_pu = ask_user_inputs()
+    load_demand_pu, rod_mode, rod_step_pu = ask_user_inputs()
 
     run(
         reactor=reactor,
@@ -364,12 +381,11 @@ def main():
         turbine=turbine,
         load_demand_pu=load_demand_pu,
         rod_mode=rod_mode,
-        rod_insert_pu=rod_insert_pu,
+        rod_step_pu=rod_step_pu,
         early_stop=True,
         csv_out=False,
         cfg=cfg,
     )
-
 
 if __name__ == "__main__":
     main()

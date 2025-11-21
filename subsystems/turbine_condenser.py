@@ -23,11 +23,12 @@ class TurbineModel:
 
     def turbine_power(self, inlet_p, inlet_t, outlet_p, m_dot_steam):
         """Calculate actual specific turbine work using isentropic thermodynamics"""
-        # Retrieve the enthalpy value into the turbine
-        h_in = CoolProp.PropsSI('H', 'P', inlet_p, 'T', inlet_t, self.fluid)
+        # Retrieve the enthalpy value into the turbine assuming saturated vapor at inlet pressure.
+        # Using (P, Q=1.0) avoids CoolProp's saturation ambiguity with (P, T) on the boiling line.
+        h_in = CoolProp.PropsSI('H', 'P', inlet_p, 'Q', 1.0, self.fluid)
 
-        # Retrieve the entropy value at the above enthalpy value to get to Isentropic expansion
-        s_in = CoolProp.PropsSI('S', 'P', inlet_p, 'T', inlet_t, self.fluid)
+        # Retrieve the corresponding entropy for saturated vapor at inlet pressure
+        s_in = CoolProp.PropsSI('S', 'P', inlet_p, 'Q', 1.0, self.fluid)
 
         # use the entropy rate above to find an enthalpy rate out of the turbine using the set outlet pressure value
         h_out_isentropic = CoolProp.PropsSI('H', 'P', outlet_p, 'S', s_in, self.fluid)
@@ -41,52 +42,77 @@ class TurbineModel:
         # Calculate power out using the passed parameter of steam mass flow rate times the specific work
         # rate times divided by 1 million (to convert to MegaWatts) and also included generator efficiency rate here,
         # as this is the scope of the project, but also means the output is an electric power
-        power_output = self.generator_efficiency * specific_work * m_dot_steam / 1000000
+        power_output_MW = self.generator_efficiency * specific_work * m_dot_steam / 1000000
 
-        return power_output  # Power output by the generator to the grid in MegaWatt electric(MWe)
+        return power_output_MW  # Power output by the generator to the grid in MegaWatt electric(MWe)
 
     def update_mass_flow_rate(self, m_dot_steam, power_supplied, power_dem, dt):
 
-        # max change is 10% step change, which is assumed to be a single second time interval
-        m_dot_steam_max_step = m_dot_steam * 0.1 * (dt / 1)
+        eps = 1.0e-6
+        denom = max(abs(power_dem), eps)  # [MW]
 
-        # max ramp up/down rate is 5% per minute
-        m_dot_steam_max_ramp = m_dot_steam * 0.05 * (dt / 60)
+        # ----------- Power error --------------------------
+        power_error = power_supplied - power_dem        # [MW]
+        power_percent_change = power_error / denom      # [-]
 
-        # use standard percentage calculation to find the difference between power output above and power
-        # demanded from the grid
-        power_percent_change = (power_supplied - power_dem) / power_supplied
+        # ----------- Flow limits per NRC rules ------------
+        m_dot_step = m_dot_steam * 0.10 * dt  # [kg/s] 10%/s allowed change
+        m_dot_ramp = m_dot_steam * 0.05 * dt / 60.0  # [kg/s] 5%/min ramp
 
-        if power_percent_change > 0.1:
-            m_dot_steam_update = -(m_dot_steam_max_step + m_dot_steam_max_ramp)
-        elif power_percent_change < -0.1:
-            m_dot_steam_update = (m_dot_steam_max_step + m_dot_steam_max_ramp)
+        # ----------- Controller logic ---------------------
+        if power_percent_change > 0.10:
+            # Too much power → reduce flow aggressively
+            m_dot_update = -(m_dot_step + m_dot_ramp)
+        elif power_percent_change < -0.10:
+            # Too little power → increase flow aggressively
+            m_dot_update = (m_dot_step + m_dot_ramp)
         else:
-            m_dot_steam_update = -(power_percent_change * m_dot_steam * (dt / 1))
+            # Within +/-10% → proportional fine adjustment
+            m_dot_update = -power_percent_change * m_dot_steam * dt  # [kg/s]
 
-        # add the change in steam mass flow rate to current steam mass flow rate to
-        new_m_dot_steam = m_dot_steam + m_dot_steam_update
+        # ----------- Apply update --------------------------
+        m_dot_new = m_dot_steam + m_dot_update  # [kg/s]
 
-        return new_m_dot_steam
+        # ----------- Prevent non-physical flow -------------
+        if m_dot_new < 0.0:
+            m_dot_new = 0.0
 
-    def step(self, inlet_t, inlet_p, m_dot_steam, power_dem, dt):
+        return m_dot_new
 
-        # Passing variables to the power calculator
+    # ======================================================
+    #                   MAIN STEP FUNCTION
+    # ======================================================
+    def step(self,
+             inlet_t: float,  # [K]  saturated steam temperature from SG
+             inlet_p: float,  # [Pa] saturated steam pressure from SG
+             m_dot_steam: float,  # [kg/s] current turbine steam flow
+             power_dem: float,  # [MW] demand from grid/operator
+             dt: float  # [s] timestep
+             ) -> tuple[float, float]:
+        """
+        Advance turbine one timestep.
+
+        Returns:
+            - power_output [MW]
+            - m_dot_steam_new [kg/s]
+        """
+
+        # ------- Compute electrical output -----------------
         power_output = self.turbine_power(
-            inlet_p,
-            inlet_t,
-            self.outlet_p,
-            m_dot_steam,
+            inlet_p=inlet_p,
+            inlet_t=inlet_t,
+            outlet_p=self.outlet_p,
+            m_dot_steam=m_dot_steam,
         )
 
-        # Passing variables to the steam mass flow rate update function
+        # ------- Update steam mass flow --------------------
         m_dot_steam_new = self.update_mass_flow_rate(
-            m_dot_steam,
-            power_output,
-            power_dem,
-            dt
+            m_dot_steam=m_dot_steam,
+            power_supplied=power_output,
+            power_dem=power_dem,
+            dt=dt,
         )
-        return power_output, m_dot_steam_new
 
+        return power_output, m_dot_steam_new
 
 

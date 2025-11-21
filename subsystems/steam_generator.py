@@ -300,16 +300,16 @@ class SG:
         T_s_new = self._update_steam_temperature(p_s_new, T_s)
 
         # 6) Linear Ts check (optional diagnostic)
-        if clp is not None:
-            dTdp = self._dTdp_sat(p_s_new)      # [K/Pa]
-            T_s_lin = dTdp * p_s_new            # [K]
-            err = abs(T_s_lin - T_s_new)        # [K]
-            if err > self.Ts_linear_warn_K:
-                print(
-                    f"[SG WARNING] Ts linear approx deviates by "
-                    f"{err:.2f} K at p_s = {p_s_new:.1f} Pa "
-                    f"(T_lin = {T_s_lin:.2f} K, T_cp = {T_s_new:.2f} K)"
-                )
+        #if clp is not None:
+        #    dTdp = self._dTdp_sat(p_s_new)      # [K/Pa]
+        #    T_s_lin = dTdp * p_s_new            # [K]
+        #    err = abs(T_s_lin - T_s_new)        # [K]
+        #    if err > self.Ts_linear_warn_K:
+        #        print(
+        #            f"[SG WARNING] Ts linear approx deviates by "
+        #            f"{err:.2f} K at p_s = {p_s_new:.1f} Pa "
+        #            f"(T_lin = {T_s_lin:.2f} K, T_cp = {T_s_new:.2f} K)"
+        #        )
 
         return {
             "T_rxu_new": T_rxu,        # [K]

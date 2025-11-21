@@ -300,6 +300,8 @@ class ReactorSimulator:
         # For diagnostics
         self.t = 0.0
         self.P_pu = 1.0
+        # Total reactivity (delta k / k) for diagnostics
+        self.rho_dk = 0.0
 
     def _compute_derivs(self, t, y, Tc_in_external, P_turb):
         """
@@ -351,6 +353,8 @@ class ReactorSimulator:
         rho_ext_pcm = RHO_STEP_PCM
         rho_tot_pcm = rho_fb_pcm + rho_rod_pcm + rho_ext_pcm
         rho_tot = rho_tot_pcm * PCM_TO_DK
+        # Store total reactivity for diagnostics / ICSystem coupling
+        self.rho_dk = rho_tot
 
         # Point kinetics
         rho_minus_beta = rho_tot - self.pk.beta

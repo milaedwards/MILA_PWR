@@ -21,8 +21,8 @@ class PlantState:
     sg_level_m: float = 0.0
 
     # Power + reactivity (stored in MW)
-    P_core_W: float = cfg.Q_CORE_NOMINAL_MW
-    P_turbine_W: float = 0.0
+    P_core_MW: float = cfg.Q_CORE_NOMINAL_MW
+    P_turbine_MW: float = 0.0
     rod_pos_pu: float = cfg.ROD_INSERT_INIT      # 0=withdrawn, 1=inserted
     rho_reactivity_dk: float = 0.0               # Δk/k
 
@@ -51,7 +51,7 @@ class PlantState:
         sgL    = float(max(0.0, self.sg_level_m))
         rod    = float(min(1.0, max(0.0, self.rod_pos_pu)))
         ld     = float(min(1.0, max(0.0, self.load_demand_pu)))
-        rodm   = float(min(1.0, max(0.0, self.rod_cmd_manual_pu)))
+        rodm   = float(min(1.0, max(-1.0, self.rod_cmd_manual_pu)))
 
         return replace(self,
             T_hot_K=T_hot, T_cold_K=T_cold, P_primary_Pa=P_pri, P_secondary_Pa=P_sec,
@@ -77,7 +77,7 @@ class PlantState:
             "P_SEC_INIT_PA": "P_secondary_Pa",
             "T_SAT_SEC_K": "T_steam_K",
             "M_DOT_SEC": "m_dot_steam_kg_s",
-            "Q_CORE_NOMINAL_MW": "P_core_W",
+            "Q_CORE_NOMINAL_MW": "P_core_MW",
             "ROD_INSERT_INIT": "rod_pos_pu",
         }
         data = base.__dict__.copy()

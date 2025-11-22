@@ -145,12 +145,16 @@ class ICSystem:
         #P_turb_feedback_pu = ps.P_turbine_MW / max(self.cfg.P_RATED_MWe, 1.0)
         #P_turb_pu = max(float(ps.load_demand_pu), float(P_turb_feedback_pu))
 
-        # === Determine load signal for reactor temperature program ===
-        # Use operator load demand as the main signal, but do not let the
-        # reference fall below what the turbine is actually producing.
+        # --- Load signal for reactor temperature program (per-unit) ---
         P_rated = max(self.cfg.P_RATED_MWe, 1.0)
-        P_turb_feedback_pu = ps.P_turbine_MW / P_rated  # actual turbine power (pu)
-        P_demand_pu = float(ps.load_demand_pu)  # operator demand (pu)
+
+        # Operator demand (what the grid is asking for)
+        P_demand_pu = float(ps.load_demand_pu)
+
+        # Feedback from actual turbine power (can be useful later)
+        P_turb_feedback_pu = ps.P_turbine_MW / P_rated
+
+        # Use demand, but don't let the reference fall below actual output
         P_turb_pu = max(P_demand_pu, P_turb_feedback_pu)
 
         T_hot, P_core = self.reactor.step(
@@ -170,10 +174,25 @@ class ICSystem:
         rod_pos = float(diag.get("x_rods", getattr(ps, "rod_pos_pu", 0.0)))
         rho_dk = float(getattr(self.reactor, "rho_dk", getattr(ps, "rho_reactivity_dk", 0.0)))
 
+        # --- Enforce simple energy balance between core power and ΔT across core ---
+        # P_core is in MW; convert to W.
+        P_core_W = P_core * 1.0e6
+
+        # Primary mass flow & cp
+        m_dot_p = getattr(self.cfg, "M_DOT_PRI", ps.m_dot_primary_kg_s)
+        cp_p = getattr(self.cfg, "CP_PRI", 5458.0)
+
+        if m_dot_p > 0.0 and cp_p > 0.0:
+            deltaT_core = P_core_W / (m_dot_p * cp_p)  # [K]
+            T_hot_balanced = ps.T_cold_K + deltaT_core
+        else:
+            # Fallback: if something's wrong, keep the reactor's own T_hot
+            T_hot_balanced = T_hot
+
         # After consuming the one-shot manual rod command, clear it in PlantState
         ps = replace(
             ps,
-            T_hot_K=T_hot,
+            T_hot_K=T_hot_balanced,
             P_core_MW=P_core,
             rod_cmd_manual_pu=0.0,
             rod_pos_pu=rod_pos,
@@ -186,6 +205,8 @@ class ICSystem:
         sg_in.update({
             # Interface with reactor / primary loop
             "T_rxu": ps.T_hot_K,
+            "P_core_MW": ps.P_core_MW,
+            "M_dot_primary": ps.m_dot_steam_kg_s,
             # If you want SG to own its own T_hot/T_cold, do not override them here.
             # "T_hot": ps.T_hot_K,
             # "T_cold": ps.T_cold_K,
@@ -243,7 +264,7 @@ class ICSystem:
         P_turb_supplied_MW = ps.P_turbine_MW
 
         # Base demand from the operator (per-unit)
-        P_dem_pu = float(ps.load_demand_pu or 0.0)
+        P_dem_pu = float(ps.load_demand_pu)
 
         # --- Simple secondary pressure controller ---
         # If P_secondary > P_SEC_CONST: increase turbine demand (open valves)
@@ -255,14 +276,12 @@ class ICSystem:
 
             # Proportional correction on demand
             Kp = getattr(self.cfg, "Kp_PSEC", 0.0)
-            dP_pu = -Kp * p_err  # minus sign: high P_sec -> higher demand
-
-            P_dem_pu += dP_pu
+            P_dem_pu -= Kp * p_err
 
         # Clamp demand to a reasonable range
         P_dem_pu = max(0.0, min(1.2, P_dem_pu))
 
-        # Convert corrected per-unit demand to MW
+        # Base demand from operator
         P_dem_MW = P_dem_pu * self.cfg.P_RATED_MWe
 
         # Call the turbine model

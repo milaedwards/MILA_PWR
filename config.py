@@ -40,7 +40,7 @@ class Config:
     ROD_INSERT_INIT: float = 0.55  # [-] initial rod insertion fraction
 
     # Rated electrical turbine-generator power
-    P_RATED_MWe: float = 1000.0  # [MW_e] nominal electrical output
+    P_RATED_MWe: float = 1122.0  # [MW_e] nominal electrical output
 
     # ---------------- Compatibility aliases ----------------
     # These alias names are used by PlantState / ICSystem and map to the

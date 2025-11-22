@@ -188,7 +188,7 @@ class PressurizerStub:
         self.tau = float(tau_pzr_s if tau_pzr_s is not None else getattr(cfg, "PZR_TAU_S", 5.0))
         self.Kplant = float(Kplant_Pa if Kplant_Pa is not None else getattr(cfg, "PZR_KPLANT_PA", 1.5e6))
 
-        self.P_set = float(getattr(cfg, "P_PRI_SET", getattr(cfg, "P_PRI_INIT_PA", 15.5e6)))
+        self.P_set = float(getattr(cfg, "P_PRI_SET_Pa", getattr(cfg, "P_PRI_INIT_PA", 15.5e6)))
 
     def step(self, dt: float, P_primary_Pa: float, T_hot_K: float, T_spray_K: float):
         self.call_count += 1

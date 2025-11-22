@@ -123,7 +123,7 @@ class PressurizerStub:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.P = float(getattr(cfg, "P_PRI_INIT_PA", 15.5e6))
-        self.P_set = float(getattr(cfg, "P_PRI_SET", self.P))
+        self.P_set = float(getattr(cfg, "P_PRI_SET_Pa", self.P))
 
     def step(
         self,

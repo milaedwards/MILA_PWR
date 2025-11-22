@@ -112,6 +112,7 @@ def run(
     load_demand_pu: float = 1.0,
     rod_mode: str = "manual",
     rod_step_pu: float = 0.0,
+    early_stop: bool = True,
     csv_out: bool = True,
     csv_name: str = "run_log.csv",
     cfg=None,
@@ -166,6 +167,23 @@ def run(
     m_steam = np.zeros(N)
     rodpos = np.zeros(N)
     rho = np.zeros(N)
+    dTavg = np.zeros(N)
+    dPpri = np.zeros(N)
+
+    # Steam generator internal state logs
+    sg_T_rxu = np.zeros(N)
+    sg_T_hot = np.zeros(N)
+    sg_T_sgi = np.zeros(N)
+    sg_T_p1  = np.zeros(N)
+    sg_T_p2  = np.zeros(N)
+    sg_T_m1  = np.zeros(N)
+    sg_T_m2  = np.zeros(N)
+    sg_T_sgu = np.zeros(N)
+    sg_T_cold = np.zeros(N)
+    sg_T_rxi  = np.zeros(N)
+    sg_p_s    = np.zeros(N)
+    sg_T_s    = np.zeros(N)
+    sg_Mdot   = np.zeros(N)
 
     sg_Tp_in = np.full(N, np.nan)
     sg_Tp_out = np.full(N, np.nan)
@@ -185,6 +203,22 @@ def run(
         m_steam[k] = ps.m_dot_steam_kg_s
         rodpos[k] = ps.rod_pos_pu
         rho[k] = ps.rho_reactivity_dk
+
+        # Log steam generator internal state (from ICSystem.sg_state)
+        sg_state = ic.sg_state
+        sg_T_rxu[k]  = sg_state.get("T_rxu", np.nan)
+        sg_T_hot[k]  = sg_state.get("T_hot", np.nan)
+        sg_T_sgi[k]  = sg_state.get("T_sgi", np.nan)
+        sg_T_p1[k]   = sg_state.get("T_p1", np.nan)
+        sg_T_p2[k]   = sg_state.get("T_p2", np.nan)
+        sg_T_m1[k]   = sg_state.get("T_m1", np.nan)
+        sg_T_m2[k]   = sg_state.get("T_m2", np.nan)
+        sg_T_sgu[k]  = sg_state.get("T_sgu", np.nan)
+        sg_T_cold[k] = sg_state.get("T_cold", np.nan)
+        sg_T_rxi[k]  = sg_state.get("T_rxi", np.nan)
+        sg_p_s[k]    = sg_state.get("p_s", np.nan)
+        sg_T_s[k]    = sg_state.get("T_s", np.nan)
+        sg_Mdot[k]   = sg_state.get("M_dot_stm", np.nan)
 
         val_in = getattr(ps, "T_sg_primary_in_K", None)
         if val_in is not None:
@@ -220,7 +254,24 @@ def run(
         # Call the coupled plant model
         ps_next = ic.step(ps)
 
+        # Derivatives for early-stop criteria
+        dTavg[k] = (ps_next.Tavg_K - ps.Tavg_K) / cfg.dt
+        dPpri[k] = (ps_next.P_primary_Pa - ps.P_primary_Pa) / cfg.dt
+
         ps = ps_next.clip_invariants()
+
+        # Early-stop logic (unchanged)
+        if early_stop and k > 20:
+            window = max(1, int(10.0 / cfg.dt))
+            if k > window:
+                if (np.max(np.abs(dTavg[k - window : k])) < 1e-3) and (
+                    np.max(np.abs(dPpri[k - window : k])) < 50.0
+                ):
+                    print(f"[early-stop] near steady-state at t={ps.t_s:.1f}s")
+                    break
+            if not (5e6 <= ps.P_primary_Pa <= 18e6):
+                print(f"[early-stop] primary pressure out of bounds at t={ps.t_s:.1f}s")
+                break
 
     # === Prepare data for plotting ===
     # Use only the portion of the arrays actually filled (handles early-stop)
@@ -236,6 +287,21 @@ def run(
     m_steam_plot = m_steam[:n_steps]
     rodpos_plot = rodpos[:n_steps]
     rho_plot = rho[:n_steps]
+
+    # Steam generator internal state (trimmed to simulated window)
+    sg_T_rxu_plot = sg_T_rxu[:n_steps]
+    sg_T_hot_plot = sg_T_hot[:n_steps]
+    sg_T_sgi_plot = sg_T_sgi[:n_steps]
+    sg_T_p1_plot = sg_T_p1[:n_steps]
+    sg_T_p2_plot = sg_T_p2[:n_steps]
+    sg_T_m1_plot = sg_T_m1[:n_steps]
+    sg_T_m2_plot = sg_T_m2[:n_steps]
+    sg_T_sgu_plot = sg_T_sgu[:n_steps]
+    sg_T_cold_plot = sg_T_cold[:n_steps]
+    sg_T_rxi_plot = sg_T_rxi[:n_steps]
+    sg_p_s_plot = sg_p_s[:n_steps]
+    sg_T_s_plot = sg_T_s[:n_steps]
+    sg_Mdot_plot = sg_Mdot[:n_steps]
 
     sg_Tp_in_plot = sg_Tp_in[:n_steps]
     sg_Tp_out_plot = sg_Tp_out[:n_steps]
@@ -369,6 +435,18 @@ def run(
     ax.grid(True)
 
     # 9. Steam mass flow vs time
+    #ax = axes[2, 2]
+    #ax.plot(t_plot, m_steam_plot, label="m_dot_steam [kg/s]")
+    #ax.set_title("Steam Mass Flow")
+    #ax.set_xlabel("Time [s]")
+    #ax.set_ylabel("Mass flow [kg/s]")
+    #ax.legend()
+    #ax.grid(True)
+
+    #plt.tight_layout()
+    #plt.show()
+
+    # 9. Steam mass flow vs time (plant-level)
     ax = axes[2, 2]
     ax.plot(t_plot, m_steam_plot, label="m_dot_steam [kg/s]")
     ax.set_title("Steam Mass Flow")
@@ -377,7 +455,91 @@ def run(
     ax.legend()
     ax.grid(True)
 
-    plt.tight_layout()
+    # === Steam Generator internal-state plots ===
+    fig_sg, ax_sg = plt.subplots(3, 4, figsize=(16, 9))
+
+    # Row 0: primary-side temps along hot leg → SG inlet/outlet
+    ax = ax_sg[0, 0]
+    ax.plot(t_plot, sg_T_rxu_plot, label="T_rxu [K]")
+    ax.set_title("Reactor Outlet (T_rxu)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[0, 1]
+    ax.plot(t_plot, sg_T_hot_plot, label="T_hot_sg [K]")
+    ax.set_title("Hot Leg (SG model)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[0, 2]
+    ax.plot(t_plot, sg_T_sgi_plot, label="T_sgi [K]")
+    ax.set_title("SG Inlet Plenum (T_sgi)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[0, 3]
+    ax.plot(t_plot, sg_T_sgu_plot, label="T_sgu [K]")
+    ax.set_title("SG Outlet Plenum (T_sgu)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    # Row 1: SG primary + metal chain
+    ax = ax_sg[1, 0]
+    ax.plot(t_plot, sg_T_p1_plot, label="T_p1 [K]")
+    ax.plot(t_plot, sg_T_p2_plot, label="T_p2 [K]")
+    ax.set_title("SG Primary Lumps T_p1/T_p2")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[1, 1]
+    ax.plot(t_plot, sg_T_m1_plot, label="T_m1 [K]")
+    ax.plot(t_plot, sg_T_m2_plot, label="T_m2 [K]")
+    ax.set_title("SG Metal Nodes T_m1/T_m2")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[1, 2]
+    ax.plot(t_plot, sg_T_cold_plot, label="T_cold_sg [K]")
+    ax.plot(t_plot, sg_T_rxi_plot, label="T_rxi [K]")
+    ax.set_title("Cold Leg and RXI")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[1, 3]
+    ax.plot(t_plot, sg_T_s_plot, label="T_s [K]")
+    ax.set_title("Steam Temperature (T_s)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.legend(); ax.grid(True)
+
+    # Row 2: steam pressure & flow
+    ax = ax_sg[2, 0]
+    ax.plot(t_plot, sg_p_s_plot / 1e6, label="p_s [MPa]")
+    ax.set_title("Steam Pressure (p_s)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Pressure [MPa]")
+    ax.legend(); ax.grid(True)
+
+    ax = ax_sg[2, 1]
+    ax.plot(t_plot, sg_Mdot_plot, label="M_dot_stm [kg/s]")
+    ax.set_title("Steam Mass Flow (SG)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Mass flow [kg/s]")
+    ax.legend(); ax.grid(True)
+
+    # Leave last two panels empty for now
+    ax_sg[2, 2].axis("off")
+    ax_sg[2, 3].axis("off")
+
+    fig_sg.tight_layout()
+    fig.tight_layout()      # tidy up the main 3×3 figure
     plt.show()
 
     if csv_out:
@@ -417,6 +579,7 @@ def main():
         load_demand_pu=load_demand_pu,
         rod_mode=rod_mode,
         rod_step_pu=rod_step_pu,
+        early_stop=True,
         csv_out=False,
         cfg=cfg,
     )

@@ -1,5 +1,5 @@
 import CoolProp.CoolProp as CoolProp
-from config import Config as cfg
+from config_2 import Config as cfg
 
 
 # from ic_system import ICSystem as ICSystem
@@ -20,6 +20,7 @@ class TurbineModel:
                                             # losses in the pipes
 
         self.outlet_p = 5000                # in Pascals
+        self.calibration_factor = None      # set on first call to step() to remove initial power mismatch
 
     def turbine_power(self, inlet_p, inlet_t, outlet_p, m_dot_steam):
         """Calculate actual specific turbine work using isentropic thermodynamics"""
@@ -105,13 +106,25 @@ class TurbineModel:
             - m_dot_steam_new [kg/s]
         """
 
-        # ------- Compute electrical output -----------------
-        power_output = self.turbine_power(
+        # ------- Compute raw electrical output -------------
+        raw_power = self.turbine_power(
             inlet_p=inlet_p,
             inlet_t=inlet_t,
             outlet_p=self.outlet_p,
             m_dot_steam=m_dot_steam,
         )
+
+        # ------- One-time calibration to remove mismatch ---
+        # On the first call, scale the turbine model so that at the
+        # current operating point the supplied power matches demand.
+        if self.calibration_factor is None:
+            eps = 1.0e-6
+            if abs(power_dem) > eps and abs(raw_power) > eps:
+                self.calibration_factor = power_dem / raw_power
+            else:
+                self.calibration_factor = 1.0
+
+        power_output = raw_power * self.calibration_factor
 
         # ------- Update steam mass flow --------------------
         m_dot_steam_new = self.update_mass_flow_rate(

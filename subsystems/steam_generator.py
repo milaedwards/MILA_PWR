@@ -7,7 +7,7 @@ try:
 except ImportError:
     clp = None
 
-from config import Config
+from config_2 import Config
 
 
 @dataclass
@@ -43,7 +43,7 @@ class SG:
 
     H_ws_minus_cpTfw_J_kg: float = field(init=False)  # [J/kg] h_ws − cp_fw * T_fw
     p_s_nom_Pa: float = field(init=False)             # [Pa] nominal steam pressure
-    cp_p_J_kgK: float = field(init=False)             # [J/kg-K] primary coolant cp
+
     def __post_init__(self):
         c = self.cfg
 
@@ -72,10 +72,7 @@ class SG:
         self.H_ws_minus_cpTfw_J_kg = c.H_ws_minus_cpTfw_J_kg  # [J/kg]
 
         # Nominal SG pressure [Pa]
-        self.p_s_nom_Pa = c.P_SG_sec_Pa  # [Pa]
-
-        # Primary-side specific heat capacity [J/kg-K]
-        self.cp_p_J_kgK = getattr(c, "cp_p_J_kgK", getattr(c, "CP_PRI", 5458.0))
+        self.p_s_nom_Pa = c.P_SEC_CONST_Pa  # [Pa]
 
     # ===================== Helper: first-order lag =====================
     @staticmethod
@@ -93,16 +90,16 @@ class SG:
         """
         c = self.cfg
 
-        T_rxu  = s.get("T_rxu",  c.T_hot_k)   # [K] reactor outlet (hot leg entry)
-        T_hot  = s.get("T_hot",  c.T_hot_k)   # [K] hot leg
-        T_sgi  = s.get("T_sgi",  c.T_hot_k)   # [K] SG inlet plenum
-        T_p1   = s.get("T_p1",   c.T_hot_k)   # [K] SG primary lump 1
-        T_p2   = s.get("T_p2",   c.T_cold_k)  # [K] SG primary lump 2
-        T_m1   = s.get("T_m1",   c.T_hot_k)   # [K] SG metal node 1
-        T_m2   = s.get("T_m2",   c.T_cold_k)  # [K] SG metal node 2
-        T_sgu  = s.get("T_sgu",  c.T_cold_k)  # [K] SG outlet plenum
-        T_cold = s.get("T_cold", c.T_cold_k)  # [K] cold leg
-        T_rxi  = s.get("T_rxi",  c.T_cold_k)  # [K] reactor inlet
+        T_rxu  = s.get("T_rxu",  c.T_HOT_INIT_K)   # [K] reactor outlet (hot leg entry)
+        T_hot  = s.get("T_hot",  c.T_HOT_INIT_K)   # [K] hot leg
+        T_sgi  = s.get("T_sgi",  c.T_HOT_INIT_K)   # [K] SG inlet plenum
+        T_p1   = s.get("T_p1",   c.T_HOT_INIT_K)   # [K] SG primary lump 1
+        T_p2   = s.get("T_p2",   c.T_COLD_INIT_K)  # [K] SG primary lump 2
+        T_m1   = s.get("T_m1",   c.T_HOT_INIT_K)   # [K] SG metal node 1
+        T_m2   = s.get("T_m2",   c.T_COLD_INIT_K)  # [K] SG metal node 2
+        T_sgu  = s.get("T_sgu",  c.T_COLD_INIT_K)  # [K] SG outlet plenum
+        T_cold = s.get("T_cold", c.T_COLD_INIT_K)  # [K] cold leg
+        T_rxi  = s.get("T_rxi",  c.T_COLD_INIT_K)  # [K] reactor inlet
 
         p_s = s.get("p_s", self.p_s_nom_Pa)   # [Pa] steam pressure
 
@@ -113,15 +110,10 @@ class SG:
             if clp is not None:
                 T_s = clp.PropsSI("T", "P", p_s, "Q", 0.0, "Water")  # [K]
             else:
-                T_s = c.T_SAT_SEC  # [K] plant-level saturation default
+                T_s = c.T_SAT_SEC_K  # [K] plant-level saturation default
 
         # Steam mass flow [kg/s], assumed equal to feed flow
         M_dot_stm = s.get("M_dot_stm", c.mdot_fw_kg_s)  # [kg/s]
-        # Primary mass flow [kg/s] for enthalpy balance
-        M_dot_pri = s.get("M_dot_primary", c.m_loop_kg_s)  # [kg/s]
-
-        # Core power [MWt] for enthalpy balance (can be overridden by caller)
-        P_core_MW = s.get("P_core_MW", c.Q_CORE_NOMINAL_W / 1e6)  # [MW]
 
         if "dt" not in s:
             raise ValueError("state_in['dt'] is required.")
@@ -141,8 +133,6 @@ class SG:
             "T_s": T_s,
             "p_s": p_s,
             "M_dot_stm": M_dot_stm,
-            "M_dot_primary": M_dot_pri,
-            "P_core_MW": P_core_MW,
             "dt": dt,
         }
 
@@ -156,38 +146,30 @@ class SG:
         return T_hot_new, T_sgi_new
 
     # ===================== SG primary + metal chain =====================
-    def _step_sg_chain(self, T_sgi, T_cold_target, T_p1, T_p2, T_m1, T_m2, T_s, dt):
+    def _step_sg_chain(self, T_sgi, T_p1, T_p2, T_m1, T_m2, T_s, dt):
         """
-        Primary/metal chain driven by transport lags while respecting
-        the energy-balanced cold-leg target.
+        Two primary lumps and two metal nodes in SG thermal chain.
         """
-        # Transport lag for first primary lump
-        T_p1_new = self._lag(T_p1, T_sgi, self.tau_p1, dt)  # [K]
+        dTp1_dt = (T_sgi - T_p1) / self.tau_p1 - (T_p1 - T_m1) / self.tau_pm1  # [K/s]
+        dTp2_dt = (T_p1  - T_p2) / self.tau_p2 - (T_p2 - T_m2) / self.tau_pm2  # [K/s]
+        dTm1_dt = (T_p1  - T_m1) / self.tau_mp1 - (T_m1 - T_s) / self.tau_ms1  # [K/s]
+        dTm2_dt = (T_p2  - T_m2) / self.tau_mp2 - (T_m2 - T_s) / self.tau_ms2  # [K/s]
 
-        # Drive second lump toward the energy-balanced cold target
-        T_p2_src = 0.5 * (T_p1_new + T_cold_target)  # [K]
-        T_p2_new = self._lag(T_p2, T_p2_src, self.tau_p2, dt)  # [K]
+        T_p1_new = T_p1 + dTp1_dt * dt  # [K]
+        T_p2_new = T_p2 + dTp2_dt * dt  # [K]
+        T_m1_new = T_m1 + dTm1_dt * dt  # [K]
+        T_m2_new = T_m2 + dTm2_dt * dt  # [K]
 
-        # Metal nodes follow the average of adjacent primary/steam temps
-        T_m1_src = 0.5 * (T_p1_new + T_s)  # [K]
-        T_m2_src = 0.5 * (T_p2_new + T_s)  # [K]
-        T_m1_new = self._lag(T_m1, T_m1_src, self.tau_mp1, dt)  # [K]
-        T_m2_new = self._lag(T_m2, T_m2_src, self.tau_mp2, dt)  # [K]
-
-        # Heat to steam limited by metal/steam conductance
-        q_ms1 = self.G_ms1_W_K * (T_m1_new - T_s)  # [W]
-        q_ms2 = self.G_ms2_W_K * (T_m2_new - T_s)  # [W]
-
-        return T_p1_new, T_p2_new, T_m1_new, T_m2_new, q_ms1, q_ms2
+        return T_p1_new, T_p2_new, T_m1_new, T_m2_new
 
     # ===================== SG outlet → cold → RXI =====================
-    def _step_primary_tail(self, T_cold_target, T_sgu, T_cold, T_rxi, dt):
+    def _step_primary_tail(self, T_p2_new, T_sgu, T_cold, T_rxi, dt):
         """
         SG outlet plenum → cold leg → reactor inlet.
         """
-        T_sgu_new = self._lag(T_sgu, T_cold_target, self.tau_sgu, dt)  # [K]
+        T_sgu_new  = self._lag(T_sgu,  T_p2_new,  self.tau_sgu,  dt)  # [K]
         T_cold_new = self._lag(T_cold, T_sgu_new, self.tau_cold, dt)  # [K]
-        T_rxi_new = self._lag(T_rxi, T_cold_new, self.tau_rxi, dt)  # [K]
+        T_rxi_new  = self._lag(T_rxi,  T_cold_new, self.tau_rxi, dt)  # [K]
         return T_sgu_new, T_cold_new, T_rxi_new
 
     # ===================== Ks mixture (compressibility) =====================
@@ -239,13 +221,14 @@ class SG:
         return (T_high - T_low) / (2.0 * dP)  # [K/Pa]
 
     # ===================== Steam pressure ODE =====================
-    def _step_steam_pressure(self, heat_available_W: float, q_ms_total_W: float, p_s_old: float, M_dot_stm: float, dt: float):
+    def _step_steam_pressure(self, T_m1_new, T_m2_new, T_s_old, p_s_old, M_dot_stm, dt):
         """
         Integrate steam pressure using SG heat balance.
         """
-        # Heat from primary to steam is capped by both available core power and
-        # metal→steam conductance.
-        heat_term = min(max(heat_available_W, 0.0), max(q_ms_total_W, 0.0))  # [W]               # [W]
+        # Heat from metal to steam [W]
+        q_ms1 = self.G_ms1_W_K * (T_m1_new - T_s_old)  # [W]
+        q_ms2 = self.G_ms2_W_K * (T_m2_new - T_s_old)  # [W]
+        heat_term = q_ms1 + q_ms2                      # [W]
 
         # Enthalpy carried away with steam [W]
         flow_term = M_dot_stm * self.H_ws_minus_cpTfw_J_kg  # [W]
@@ -293,38 +276,24 @@ class SG:
         T_s    = s["T_s"]     # [K]
         p_s    = s["p_s"]     # [Pa]
         M_dot  = s["M_dot_stm"]  # [kg/s]
-        M_dot_pri = s["M_dot_primary"]  # [kg/s]
-        P_core_MW = s["P_core_MW"]  # [MW]
         dt     = s["dt"]      # [s]
-
-        # Energy-balanced primary drop: Q_core = m_dot * cp * (Th - Tc)
-        q_core_W = max(P_core_MW, 0.0) * 1e6  # [W]
-        denom = max(M_dot_pri * max(self.cp_p_J_kgK, 1e-6), 1e-6)
-        delta_T_primary = q_core_W / denom  # [K]
-        T_cold_target = T_rxu - delta_T_primary  # [K]
 
         # 1) RXU → hot leg → SG inlet
         T_hot_new, T_sgi_new = self._step_primary_head(T_rxu, T_hot, T_sgi, dt)
 
         # 2) SG primary + metal chain
-        T_p1_new, T_p2_new, T_m1_new, T_m2_new, q_ms1, q_ms2 = self._step_sg_chain(
-            T_sgi_new, T_cold_target, T_p1, T_p2, T_m1, T_m2, T_s, dt
+        T_p1_new, T_p2_new, T_m1_new, T_m2_new = self._step_sg_chain(
+            T_sgi_new, T_p1, T_p2, T_m1, T_m2, T_s, dt
         )
-
-        q_ms_total = q_ms1 + q_ms2
 
         # 3) SG outlet → cold leg → reactor inlet
         T_sgu_new, T_cold_new, T_rxi_new = self._step_primary_tail(
-            T_cold_target, T_sgu, T_cold, T_rxi, dt
+            T_p2_new, T_sgu, T_cold, T_rxi, dt
         )
 
         # 4) Steam pressure dynamics
         p_s_new = self._step_steam_pressure(
-            heat_available_W=q_core_W,
-            q_ms_total_W=q_ms_total,
-            p_s_old=p_s,
-            M_dot_stm=M_dot,
-            dt=dt,
+            T_m1_new, T_m2_new, T_s, p_s, M_dot, dt
         )
 
         # 5) Steam temperature from saturation

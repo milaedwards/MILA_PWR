@@ -1,6 +1,6 @@
 from dataclasses import dataclass, replace
 from typing import Optional, Any
-from config import Config
+from config_2 import Config
 from plant_state import PlantState
 
 @dataclass
@@ -18,25 +18,25 @@ class ICSystem:
         c = self.cfg
 
         # Internal Steam Generator state for dict-based SG API
-        # NOTE: adjust the Config attribute names (T_HOT_INIT, etc.)
+        # NOTE: adjust the Config attribute names (T_HOT_INIT_K, etc.)
         # to match your actual Config class.
         self.sg_state = {
             # Primary-side nodes
-            "T_rxu":  c.T_HOT_INIT,
-            "T_hot":  c.T_HOT_INIT,
-            "T_sgi":  c.T_HOT_INIT,
-            "T_p1":   c.T_HOT_INIT,
-            "T_p2":   c.T_COLD_INIT,
-            "T_m1":   c.T_HOT_INIT,
-            "T_m2":   c.T_COLD_INIT,
-            "T_sgu":  c.T_COLD_INIT,
-            "T_cold": c.T_COLD_INIT,
-            "T_rxi":  c.T_COLD_INIT,
+            "T_rxu":  c.T_HOT_INIT_K,
+            "T_hot":  c.T_HOT_INIT_K,
+            "T_sgi":  c.T_HOT_INIT_K,
+            "T_p1":   c.T_HOT_INIT_K,
+            "T_p2":   c.T_COLD_INIT_K,
+            "T_m1":   c.T_HOT_INIT_K,
+            "T_m2":   c.T_COLD_INIT_K,
+            "T_sgu":  c.T_COLD_INIT_K,
+            "T_cold": c.T_COLD_INIT_K,
+            "T_rxi":  c.T_COLD_INIT_K,
 
             # Secondary / steam side
-            "p_s":       c.P_SEC_INIT,
-            "T_s":       c.T_SAT_SEC,
-            "M_dot_stm": c.M_DOT_SEC,
+            "p_s":       c.P_SEC_INIT_Pa,
+            "T_s":       c.T_SAT_SEC_K,
+            "M_dot_stm": c.M_DOT_SEC_KG_S,
         }
 
         # Internal state for manual rod "step" commands
@@ -146,7 +146,13 @@ class ICSystem:
         #P_turb_pu = max(float(ps.load_demand_pu), float(P_turb_feedback_pu))
 
         # --- Load signal for reactor temperature program (per-unit) ---
-        P_rated = max(self.cfg.P_RATED_MWe, 1.0)
+        # Use the turbine's own nominal MWe rating for scaling if available,
+        # otherwise fall back to the Config value.
+        try:
+            P_rated_raw = float(getattr(self.turbine, "P_nom_MWe"))
+        except (AttributeError, TypeError, ValueError):
+            P_rated_raw = float(getattr(self.cfg, "P_RATED_MWe", 1000.0))
+        P_rated = max(P_rated_raw, 1.0)
 
         # Operator demand (what the grid is asking for)
         P_demand_pu = float(ps.load_demand_pu)
@@ -182,17 +188,9 @@ class ICSystem:
         m_dot_p = getattr(self.cfg, "M_DOT_PRI", ps.m_dot_primary_kg_s)
         cp_p = getattr(self.cfg, "CP_PRI", 5458.0)
 
-        if m_dot_p > 0.0 and cp_p > 0.0:
-            deltaT_core = P_core_W / (m_dot_p * cp_p)  # [K]
-            T_hot_balanced = ps.T_cold_K + deltaT_core
-        else:
-            # Fallback: if something's wrong, keep the reactor's own T_hot
-            T_hot_balanced = T_hot
-
-        # After consuming the one-shot manual rod command, clear it in PlantState
         ps = replace(
             ps,
-            T_hot_K=T_hot_balanced,
+            T_hot_K=T_hot,  # <- use the reactor's own outlet temp
             P_core_MW=P_core,
             rod_cmd_manual_pu=0.0,
             rod_pos_pu=rod_pos,
@@ -205,8 +203,6 @@ class ICSystem:
         sg_in.update({
             # Interface with reactor / primary loop
             "T_rxu": ps.T_hot_K,
-            "P_core_MW": ps.P_core_MW,
-            "M_dot_primary": ps.m_dot_steam_kg_s,
             # If you want SG to own its own T_hot/T_cold, do not override them here.
             # "T_hot": ps.T_hot_K,
             # "T_cold": ps.T_cold_K,
@@ -267,9 +263,9 @@ class ICSystem:
         P_dem_pu = float(ps.load_demand_pu)
 
         # --- Simple secondary pressure controller ---
-        # If P_secondary > P_SEC_CONST: increase turbine demand (open valves)
-        # If P_secondary < P_SEC_CONST: decrease turbine demand (close valves)
-        P_sec_nom = getattr(self.cfg, "P_SEC_CONST", 5.764e6)
+        # If P_secondary > P_SEC_CONST_Pa: increase turbine demand (open valves)
+        # If P_secondary < P_SEC_CONST_Pa: decrease turbine demand (close valves)
+        P_sec_nom = getattr(self.cfg, "P_SEC_CONST_Pa", 5.764e6)
         if P_sec_nom > 0.0:
             # error > 0 means pressure is BELOW nominal
             p_err = (P_sec_nom - ps.P_secondary_Pa) / P_sec_nom
@@ -281,8 +277,8 @@ class ICSystem:
         # Clamp demand to a reasonable range
         P_dem_pu = max(0.0, min(1.2, P_dem_pu))
 
-        # Base demand from operator
-        P_dem_MW = P_dem_pu * self.cfg.P_RATED_MWe
+        # Base demand from operator (scale by the same rated turbine power)
+        P_dem_MW = P_dem_pu * P_rated
 
         # Call the turbine model
         P_turb_MW, m_dot_steam = self.turbine.step(

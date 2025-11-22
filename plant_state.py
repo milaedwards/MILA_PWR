@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from config import Config
+from config_2 import Config
 
 cfg = Config()
 
@@ -11,13 +11,13 @@ class PlantState:
     # Primary loop
     T_hot_K: float = cfg.T_HOT_INIT_K
     T_cold_K: float = cfg.T_COLD_INIT_K
-    P_primary_Pa: float = cfg.P_PRI_INIT_PA
+    P_primary_Pa: float = cfg.P_PRI_INIT_Pa
     m_dot_primary_kg_s: float = cfg.M_DOT_PRI
 
     # Steam/secondary
-    P_secondary_Pa: float = cfg.P_SEC_INIT_PA
+    P_secondary_Pa: float = cfg.P_SEC_INIT_Pa
     T_steam_K: float = cfg.T_SAT_SEC_K
-    m_dot_steam_kg_s: float = cfg.M_DOT_SEC
+    m_dot_steam_kg_s: float = cfg.M_DOT_SEC_KG_S
     sg_level_m: float = 0.0
 
     # Power + reactivity (stored in MW)

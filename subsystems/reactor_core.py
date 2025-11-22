@@ -11,7 +11,7 @@
 #   * tau_rxi = 2.145s: Vessel inlet → Core inlet (Could not find accurate information to calculate.  Using Vajpayee's values)
 #   * tau_rxu = 2.517s: Core exitt → Vessel exit
 #   * Bypass flow (5.9%) at cold leg temp mixes in upper plenum, creating ~2.75K temp drop
-# - Receives 4 inputs from main.py:
+# - Receives 4 inputs from main_sg.py:
 #    (1) cold leg temperature (Tc_in); (2) time step (dt); (3) turbine power demand in per-unit (P_turb); and (4) rod control mode (auto/manual)
 #    and outputs hot leg temperature (Th_out) and reactor power (P_out)
 # - Internal simulation #1: Tc rises (simulated at t=10 seconds), then Th and T_avg rise.
@@ -32,7 +32,7 @@ from scipy.interpolate import interp1d
 
 # Global constants
 P_RATED_MWT = 3400.0  # MWt, AP1000 reactor core heat output from AP1000 DCD Chapter 4, Table 4.4-1
-P_RATED_MWE = 1117.0  # MWe, AP1000 nominal electric power at 33% eficiency
+P_RATED_MWE = 1122.0  # MWe, AP1000 nominal electric power at 33% eficiency
 P_RATED_W = P_RATED_MWT * 1e6
 PCM_TO_DK = 1e-5  # conversion factor pcm to delta_k/k
 STROKE_IN = 166.755  # rod dimensions from AP1000 DCD Chapter 3, section 3.9.4.2.1

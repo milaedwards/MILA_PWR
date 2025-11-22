@@ -22,7 +22,7 @@ class PlantState:
 
     # Power + reactivity (stored in MW)
     P_core_MW: float = cfg.Q_CORE_NOMINAL_MW
-    P_turbine_MW: float = 0.0
+    P_turbine_MW: float = cfg.P_RATED_MWe
     rod_pos_pu: float = cfg.ROD_INSERT_INIT      # 0=withdrawn, 1=inserted
     rho_reactivity_dk: float = 0.0               # Δk/k
 

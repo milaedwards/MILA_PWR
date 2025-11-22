@@ -122,11 +122,11 @@ class ICSystem:
 
         # Use actual turbine power (per-unit) as the input to the reactor
         # power program, rather than the operator load demand.
-        P_rated_MWe = getattr(self.cfg, "P_RATED_MWe", 1000.0)
-        if P_rated_MWe > 0.0:
-            P_turb_pu = ps.P_turbine_MW / P_rated_MWe
-        else:
-            P_turb_pu = 1.0
+        #P_rated_MWe = getattr(self.cfg, "P_RATED_MWe", 1000.0)
+        #if P_rated_MWe > 0.0:
+        #    P_turb_pu = float(ps.load_demand_pu)
+        #else:
+        #    P_turb_pu = 1.0
 
         # Drive the reactor against the operator's load demand (per-unit)
         # rather than the currently produced turbine power. Using the demand
@@ -145,6 +145,13 @@ class ICSystem:
         #P_turb_feedback_pu = ps.P_turbine_MW / max(self.cfg.P_RATED_MWe, 1.0)
         #P_turb_pu = max(float(ps.load_demand_pu), float(P_turb_feedback_pu))
 
+        # === Determine load signal for reactor temperature program ===
+        # Use operator load demand as the main signal, but do not let the
+        # reference fall below what the turbine is actually producing.
+        P_rated = max(self.cfg.P_RATED_MWe, 1.0)
+        P_turb_feedback_pu = ps.P_turbine_MW / P_rated  # actual turbine power (pu)
+        P_demand_pu = float(ps.load_demand_pu)  # operator demand (pu)
+        P_turb_pu = max(P_demand_pu, P_turb_feedback_pu)
 
         T_hot, P_core = self.reactor.step(
             Tc_in=ps.T_cold_K,
@@ -235,15 +242,30 @@ class ICSystem:
         # Current turbine power in MW (PlantState stores MW)
         P_turb_supplied_MW = ps.P_turbine_MW
 
-        # Demanded electrical power in MW from per-unit load demand
-        P_dem_MW = ps.load_demand_pu * self.cfg.P_RATED_MWe
+        # Base demand from the operator (per-unit)
+        P_dem_pu = float(ps.load_demand_pu or 0.0)
 
-        #print(
-        #    f"t={ps.t_s:6.1f} s | load_pu={ps.load_demand_pu:5.3f} "
-        #    f"P_dem={P_dem_MW:7.1f} MW | P_turb={ps.P_turbine_MW:7.1f} MW | "
-        #    f"m_dot={ps.m_dot_steam_kg_s:7.1f} kg/s | P_sec={ps.P_secondary_Pa / 1e6:5.2f} MPa"
-        #)
+        # --- Simple secondary pressure controller ---
+        # If P_secondary > P_SEC_CONST: increase turbine demand (open valves)
+        # If P_secondary < P_SEC_CONST: decrease turbine demand (close valves)
+        P_sec_nom = getattr(self.cfg, "P_SEC_CONST", 5.764e6)
+        if P_sec_nom > 0.0:
+            # error > 0 means pressure is BELOW nominal
+            p_err = (P_sec_nom - ps.P_secondary_Pa) / P_sec_nom
 
+            # Proportional correction on demand
+            Kp = getattr(self.cfg, "Kp_PSEC", 0.0)
+            dP_pu = -Kp * p_err  # minus sign: high P_sec -> higher demand
+
+            P_dem_pu += dP_pu
+
+        # Clamp demand to a reasonable range
+        P_dem_pu = max(0.0, min(1.2, P_dem_pu))
+
+        # Convert corrected per-unit demand to MW
+        P_dem_MW = P_dem_pu * self.cfg.P_RATED_MWe
+
+        # Call the turbine model
         P_turb_MW, m_dot_steam = self.turbine.step(
             inlet_t=ps.T_steam_K,
             inlet_p=ps.P_secondary_Pa,
@@ -254,7 +276,7 @@ class ICSystem:
 
         ps = replace(
             ps,
-            P_turbine_MW=float(P_turb_MW),  # still stored in MW
+            P_turbine_MW=float(P_turb_MW),
             m_dot_steam_kg_s=float(m_dot_steam),
         )
 

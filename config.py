@@ -29,6 +29,9 @@ class Config:
     T_SAT_SEC: float = 546.13           # [K] saturation temp at P_sec
     M_DOT_SEC: float = 1887.4           # [kg/s] main steam / feed flow
 
+    # Simple secondary pressure controller (turbine demand bias)
+    Kp_PSEC: float = 0.5                # [-] proportional gain
+
     # ---------------- Initial conditions ----------------
     T_HOT_INIT: float = 595.59     # [K] initial hot-leg temp
     T_COLD_INIT: float = 552.59    # [K] initial cold-leg temp

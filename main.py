@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import replace
 
-from config_2 import Config
+from config import Config
 from plant_state import PlantState
 from ic_system import ICSystem
 
@@ -112,6 +112,7 @@ def run(
     load_demand_pu: float = 1.0,
     rod_mode: str = "manual",
     rod_step_pu: float = 0.0,
+    early_stop: bool = True,
     csv_out: bool = True,
     csv_name: str = "run_log.csv",
     cfg=None,
@@ -124,6 +125,14 @@ def run(
     function can be called from a simple main() entrypoint.
     """
     cfg = Config() if cfg is None else cfg
+
+    print(
+        f"[CFG] H_ws-cpTfw = {cfg.H_ws_minus_cpTfw_J_kg / 1e6:.3f} MJ/kg, "
+        f"m_dot_steam_nom = {cfg.M_DOT_STEAM_NOM_KG_S:.1f} kg/s, "
+        f"Q_core_nom = {cfg.Q_CORE_NOMINAL_W / 1e6:.1f} MW, "
+        f"m*H = {cfg.M_DOT_STEAM_NOM_KG_S * cfg.H_ws_minus_cpTfw_J_kg / 1e6:.1f} MW"
+    )
+
     ps = PlantState.init_from_config(cfg)
 
     # Set rod mode and initialize manual command to zero; the ICSystem will interpret
@@ -166,6 +175,8 @@ def run(
     m_steam = np.zeros(N)
     rodpos = np.zeros(N)
     rho = np.zeros(N)
+    dTavg = np.zeros(N)
+    dPpri = np.zeros(N)
 
     sg_Tp_in = np.full(N, np.nan)
     sg_Tp_out = np.full(N, np.nan)
@@ -220,7 +231,24 @@ def run(
         # Call the coupled plant model
         ps_next = ic.step(ps)
 
+        # Derivatives for early-stop criteria
+        dTavg[k] = (ps_next.Tavg_K - ps.Tavg_K) / cfg.dt
+        dPpri[k] = (ps_next.P_primary_Pa - ps.P_primary_Pa) / cfg.dt
+
         ps = ps_next.clip_invariants()
+
+        # Early-stop logic (unchanged)
+        if early_stop and k > 20:
+            window = max(1, int(10.0 / cfg.dt))
+            if k > window:
+                if (np.max(np.abs(dTavg[k - window : k])) < 1e-3) and (
+                    np.max(np.abs(dPpri[k - window : k])) < 50.0
+                ):
+                    print(f"[early-stop] near steady-state at t={ps.t_s:.1f}s")
+                    break
+            if not (5e6 <= ps.P_primary_Pa <= 18e6):
+                print(f"[early-stop] primary pressure out of bounds at t={ps.t_s:.1f}s")
+                break
 
     # === Prepare data for plotting ===
     # Use only the portion of the arrays actually filled (handles early-stop)
@@ -349,22 +377,26 @@ def run(
     ax.legend()
     ax.grid(True)
 
-    # 7. Load demand vs normalized turbine power vs time
+    # 7. Load demand vs turbine power vs time (absolute MWe)
+    P_load_plot = load_plot * cfg.P_RATED_MWe  # [MWe]
+
     ax = axes[2, 0]
-    ax.plot(t_plot, load_plot, label="load demand [pu]")
-    ax.plot(t_plot, Pturb_norm, label="P_turbine / P_turb_nom")
+    ax.plot(t_plot, P_load_plot, label="load demand [MWe]")
+    ax.plot(t_plot, Pturb_plot, label="P_turbine [MWe]")
     ax.set_title("Load Demand vs Turbine Power")
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Per-unit")
+    ax.set_ylabel("Power [MWe]")
+    # Disable scientific offset so the constant load line does not appear at 0
+    ax.ticklabel_format(style="plain", useOffset=False, axis="y")
     ax.legend()
     ax.grid(True)
 
     # 8. Normalized secondary pressure vs time
     ax = axes[2, 1]
-    ax.plot(t_plot, Psec_norm, label="P_secondary / P_sec_nom")
-    ax.set_title("Normalized Secondary Pressure")
+    ax.plot(t_plot, Psec_plot / 1e6, label="P_secondary [MPa]]")
+    ax.set_title("Secondary Pressure")
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Per-unit")
+    ax.set_ylabel("Pressure [MPa]")
     ax.legend()
     ax.grid(True)
 
@@ -392,7 +424,7 @@ def run(
                 Pcore_plot,
                 Pturb_plot,
                 rodpos_plot,
-                rho_plot,
+                rho_plot * 1e5,
                 m_steam_plot,
             ]
         )
@@ -417,9 +449,11 @@ def main():
         load_demand_pu=load_demand_pu,
         rod_mode=rod_mode,
         rod_step_pu=rod_step_pu,
+        early_stop=False,
         csv_out=False,
         cfg=cfg,
     )
 
 if __name__ == "__main__":
     main()
+

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, replace
 from typing import Optional, Any
-from config_2 import Config
+from config import Config
 from plant_state import PlantState
 
 @dataclass
@@ -18,7 +18,7 @@ class ICSystem:
         c = self.cfg
 
         # Internal Steam Generator state for dict-based SG API
-        # NOTE: adjust the Config attribute names (T_HOT_INIT_K, etc.)
+        # NOTE: adjust the Config attribute names (T_HOT_INIT, etc.)
         # to match your actual Config class.
         self.sg_state = {
             # Primary-side nodes
@@ -34,7 +34,7 @@ class ICSystem:
             "T_rxi":  c.T_COLD_INIT_K,
 
             # Secondary / steam side
-            "p_s":       c.P_SEC_INIT_Pa,
+            "p_s":       c.P_SEC_INIT_PA,
             "T_s":       c.T_SAT_SEC_K,
             "M_dot_stm": c.M_DOT_SEC_KG_S,
         }
@@ -178,7 +178,31 @@ class ICSystem:
             diag = {}
 
         rod_pos = float(diag.get("x_rods", getattr(ps, "rod_pos_pu", 0.0)))
-        rho_dk = float(getattr(self.reactor, "rho_dk", getattr(ps, "rho_reactivity_dk", 0.0)))
+        rho_dk = float(
+            getattr(self.reactor, "rho_dk",
+                    getattr(ps, "rho_reactivity_dk", 0.0))
+        )
+
+        # ---------- DEBUG: reactor thermal / neutronic state ----------
+        if ps.t_s < 5.0:  # only spam for the first few seconds
+            T_avg_rc = diag.get(
+                "T_avg",
+                0.5 * (ps.T_hot_K + ps.T_cold_K)  # fallback if missing
+            )
+            print(
+                "[RC_STATE] "
+                f"t={ps.t_s:6.3f}s  "
+                f"P_core={P_core:7.1f} MWt  "
+                f"rho={rho_dk * 1e5:7.1f} pcm  "
+                f"Tf={diag.get('Tf', float('nan')):7.2f} K  "
+                f"Tc1={diag.get('Tc1', float('nan')):7.2f} K  "
+                f"Tc2={diag.get('Tc2', float('nan')):7.2f} K  "
+                f"T_in={diag.get('T_core_inlet', ps.T_cold_K):7.2f} K  "
+                f"T_hot={diag.get('T_hot_leg', T_hot):7.2f} K  "
+                f"T_avg={T_avg_rc:7.2f} K  "
+                f"rod_pos={rod_pos:5.3f}"
+            )
+        # --------------------------------------------------------------
 
         # --- Enforce simple energy balance between core power and ΔT across core ---
         # P_core is in MW; convert to W.
@@ -187,6 +211,9 @@ class ICSystem:
         # Primary mass flow & cp
         m_dot_p = getattr(self.cfg, "M_DOT_PRI", ps.m_dot_primary_kg_s)
         cp_p = getattr(self.cfg, "CP_PRI", 5458.0)
+
+        N_loops = float(getattr(self.cfg, "N_LOOPS", 2))
+        Q_core_loop_W = P_core_W / max(N_loops, 1.0)
 
         ps = replace(
             ps,
@@ -206,6 +233,7 @@ class ICSystem:
             # If you want SG to own its own T_hot/T_cold, do not override them here.
             # "T_hot": ps.T_hot_K,
             # "T_cold": ps.T_cold_K,
+            "Q_core_W": Q_core_loop_W,
 
             # Interface with secondary / turbine
             "p_s":       ps.P_secondary_Pa,
@@ -230,13 +258,49 @@ class ICSystem:
 
         self.sg_state = sg_state_new
 
-        # Push SG outputs back into PlantState
+        self.sg_state = sg_state_new
+
+        # --- Map SG outputs back into PlantState ---
+
+        # Reactor inlet / primary cold leg temperature from SG
+        # Prefer T_rxi (reactor inlet) if present; fall back to T_cold.
+        T_rxi = float(self.sg_state.get("T_rxi", ps.T_cold_K))
+        T_cold_loop = float(self.sg_state.get("T_cold", T_rxi))
+
+        # Metal node temps for convenience
+        T_m1 = float(self.sg_state.get("T_m1", ps.T_sg_m1_K))
+        T_m2 = float(self.sg_state.get("T_m2", ps.T_sg_m2_K))
+
         ps = replace(
             ps,
-            T_cold_K=self.sg_state["T_cold"],
-            T_steam_K=self.sg_state["T_s"],
-            P_secondary_Pa=self.sg_state["p_s"],
-            m_dot_steam_kg_s=self.sg_state["M_dot_stm"],
+
+            # ---- PRIMARY SIDE ----
+            # What the reactor actually sees as inlet temperature
+            T_cold_K=T_rxi,
+
+            # Summary SG primary temps for plotting
+            T_sg_primary_in_K=float(self.sg_state.get("T_hot", ps.T_sg_primary_in_K)),
+            T_sg_primary_out_K=T_cold_loop,
+            T_sg_metal_K=0.5 * (T_m1 + T_m2),
+
+            # Detailed SG primary temps
+            T_sg_hot_K=float(self.sg_state.get("T_hot", ps.T_sg_hot_K)),
+            T_sg_sgi_K=float(self.sg_state.get("T_sgi", ps.T_sg_sgi_K)),
+            T_sg_p1_K=float(self.sg_state.get("T_p1", ps.T_sg_p1_K)),
+            T_sg_p2_K=float(self.sg_state.get("T_p2", ps.T_sg_p2_K)),
+            T_sg_sgu_K=float(self.sg_state.get("T_sgu", ps.T_sg_sgu_K)),
+            T_sg_cold_K=T_cold_loop,
+            T_sg_m1_K=T_m1,
+            T_sg_m2_K=T_m2,
+
+            # Secondary / steam dome temperature
+            T_sg_steam_K=float(self.sg_state.get("T_s", ps.T_sg_steam_K)),
+
+            # ---- SECONDARY SIDE (already mostly correct) ----
+            P_secondary_Pa=float(self.sg_state.get("p_s", ps.P_secondary_Pa)),
+            T_steam_K=float(self.sg_state.get("T_s", ps.T_steam_K)),
+            m_dot_steam_kg_s=float(self.sg_state.get("M_dot_stm",
+                                                     ps.m_dot_steam_kg_s)),
         )
 
         # Pressurizer
@@ -263,9 +327,9 @@ class ICSystem:
         P_dem_pu = float(ps.load_demand_pu)
 
         # --- Simple secondary pressure controller ---
-        # If P_secondary > P_SEC_CONST_Pa: increase turbine demand (open valves)
-        # If P_secondary < P_SEC_CONST_Pa: decrease turbine demand (close valves)
-        P_sec_nom = getattr(self.cfg, "P_SEC_CONST_Pa", 5.764e6)
+        # If P_secondary > P_SEC_CONST: increase turbine demand (open valves)
+        # If P_secondary < P_SEC_CONST: decrease turbine demand (close valves)
+        P_sec_nom = getattr(self.cfg, "P_SEC_CONST_PA", 5.764e6)
         if P_sec_nom > 0.0:
             # error > 0 means pressure is BELOW nominal
             p_err = (P_sec_nom - ps.P_secondary_Pa) / P_sec_nom
@@ -294,5 +358,9 @@ class ICSystem:
             P_turbine_MW=float(P_turb_MW),
             m_dot_steam_kg_s=float(m_dot_steam),
         )
+
+        if ps.t_s < 5.0:  # only spam for the first few seconds
+            print(f"[DBG] t={ps.t_s:.1f}s  T_hot={ps.T_hot_K:.2f} K  "
+                  f"T_cold={ps.T_cold_K:.2f} K")
 
         return ps.clip_invariants()

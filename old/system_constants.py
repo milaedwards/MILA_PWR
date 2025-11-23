@@ -1,4 +1,4 @@
-# config.py
+# config_chris.py
 """
 This module contains some constants used in the simulation
 of an operating nuclear poswer plant of the 'pressurized

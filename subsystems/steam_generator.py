@@ -7,8 +7,8 @@ try:
 except ImportError:
     clp = None
 
-from config_2 import Config
-
+from config import Config
+import math
 
 @dataclass
 class SG:
@@ -43,6 +43,7 @@ class SG:
 
     H_ws_minus_cpTfw_J_kg: float = field(init=False)  # [J/kg] h_ws − cp_fw * T_fw
     p_s_nom_Pa: float = field(init=False)             # [Pa] nominal steam pressure
+    Q_core_nom_per_loop_W: float = field(init=False)  # [W] nominal core power per loop
 
     def __post_init__(self):
         c = self.cfg
@@ -72,7 +73,12 @@ class SG:
         self.H_ws_minus_cpTfw_J_kg = c.H_ws_minus_cpTfw_J_kg  # [J/kg]
 
         # Nominal SG pressure [Pa]
-        self.p_s_nom_Pa = c.P_SEC_CONST_Pa  # [Pa]
+        self.p_s_nom_Pa = c.P_SEC_CONST_PA  # [Pa]
+
+        # Nominal core power per loop [W] (for fallback if Q_core_W not provided)
+        Q_core_nom_W = getattr(c, "Q_CORE_NOMINAL_W", 3.4e9)  # total core [W]
+        N_loops = float(getattr(c, "N_LOOPS", 2))
+        self.Q_core_nom_per_loop_W = Q_core_nom_W / max(N_loops, 1.0)
 
     # ===================== Helper: first-order lag =====================
     @staticmethod
@@ -119,6 +125,22 @@ class SG:
             raise ValueError("state_in['dt'] is required.")
         dt = s["dt"]  # [s]
 
+        # Core power per loop [W].
+        # If ic_system passes an explicit Q_core_W (already divided by N_LOOPS),
+        # just use that. Otherwise, infer it from P_core_MW so the SG always
+        # tracks the current core power.
+        if "Q_core_W" in s and s["Q_core_W"] is not None:
+            Q_core_W = float(s["Q_core_W"])
+        else:
+            P_core_MW = float(s.get("P_core_MW", c.Q_CORE_NOMINAL_MW))
+            P_core_MW = max(P_core_MW, 0.0)
+            scale = P_core_MW / max(c.Q_CORE_NOMINAL_MW, 1e-6)
+            Q_core_W = self.Q_core_nom_per_loop_W * scale
+
+        # Safety: never allow negative or non-finite power
+        if not math.isfinite(Q_core_W) or Q_core_W < 0.0:
+            Q_core_W = self.Q_core_nom_per_loop_W
+
         return {
             "T_rxu": T_rxu,
             "T_hot": T_hot,
@@ -132,6 +154,7 @@ class SG:
             "T_rxi": T_rxi,
             "T_s": T_s,
             "p_s": p_s,
+            "Q_core_W": Q_core_W,
             "M_dot_stm": M_dot_stm,
             "dt": dt,
         }
@@ -221,21 +244,20 @@ class SG:
         return (T_high - T_low) / (2.0 * dP)  # [K/Pa]
 
     # ===================== Steam pressure ODE =====================
-    def _step_steam_pressure(self, T_m1_new, T_m2_new, T_s_old, p_s_old, M_dot_stm, dt):
+    def _step_steam_pressure(self, p_s_old, T_s_old, heat_ms_W, M_dot_stm, dt):
         """
         Integrate steam pressure using SG heat balance.
         """
         # Heat from metal to steam [W]
-        q_ms1 = self.G_ms1_W_K * (T_m1_new - T_s_old)  # [W]
-        q_ms2 = self.G_ms2_W_K * (T_m2_new - T_s_old)  # [W]
-        heat_term = q_ms1 + q_ms2                      # [W]
-
-        # Enthalpy carried away with steam [W]
+        # heat_ms_W = heat into steam from metal, already limited by core power [W]
         flow_term = M_dot_stm * self.H_ws_minus_cpTfw_J_kg  # [W]
+        Ks_old = self._compute_Ks_mixture(p_s_old)  # [J/Pa]
 
-        # Old Ks, predictor
-        Ks_old = self._compute_Ks_mixture(p_s_old)          # [J/Pa]
-        dpdt_old = (heat_term - flow_term) / Ks_old         # [Pa/s]
+        # OLD: heat_term = q_ms1 + q_ms2
+        # NEW: use limited heat_ms_W
+        heat_term = heat_ms_W
+
+        dpdt_old = (heat_term - flow_term) / Ks_old
         p_s_mid = p_s_old + dpdt_old * dt                   # [Pa]
 
         # New Ks, corrector
@@ -278,6 +300,10 @@ class SG:
         M_dot  = s["M_dot_stm"]  # [kg/s]
         dt     = s["dt"]      # [s]
 
+        # Core power per loop [W]; limit SG heat to this
+        Q_core_loop_W = float(s["Q_core_W"])
+        Q_core_loop_W = max(Q_core_loop_W, 0.0)
+
         # 1) RXU → hot leg → SG inlet
         T_hot_new, T_sgi_new = self._step_primary_head(T_rxu, T_hot, T_sgi, dt)
 
@@ -291,12 +317,50 @@ class SG:
             T_p2_new, T_sgu, T_cold, T_rxi, dt
         )
 
-        # 4) Steam pressure dynamics
+        # 4) Heat from metal to steam, raw (before core-power limit) [W]
+        q_ms1_W = self.G_ms1_W_K * (T_m1_new - T_s)  # [W]
+        q_ms2_W = self.G_ms2_W_K * (T_m2_new - T_s)  # [W]
+        heat_ms_raw_W = q_ms1_W + q_ms2_W
+
+        # Enforce that SG cannot transfer more heat to steam
+        # than the core actually produces in this loop.
+        heat_ms_W = min(heat_ms_raw_W, Q_core_loop_W)
+
+        # (Optional safety: if temperatures invert, allow cooling)
+        # heat_ms_W = max(heat_ms_W, 0.0)
+
+        # 4a) Use this limited heat to set a max steam flow
+        if self.H_ws_minus_cpTfw_J_kg > 0.0:
+            max_steam_flow = heat_ms_W / self.H_ws_minus_cpTfw_J_kg  # [kg/s]
+            M_dot = min(M_dot, max_steam_flow * 1.2)
+
+            # ---- DEBUG: check SG energy balance ----
+            # net_Q > 0  → SG steam region gaining heat (pressure tends to rise)
+            # net_Q < 0  → SG steam region losing heat (pressure tends to drop)
+            net_Q_W = heat_ms_W - M_dot * self.H_ws_minus_cpTfw_J_kg
+
+            # Only print occasionally so you don't spam the console
+            if not hasattr(self, "_debug_counter"):
+                self._debug_counter = 0
+            self._debug_counter += 1
+
+            if self._debug_counter % 10 == 0:  # every 10 SG steps
+                print(
+                    f"[SG] net_Q = {net_Q_W / 1e6:7.2f} MW, "
+                    f"heat_in = {heat_ms_W / 1e6:7.2f} MW, "
+                    f"heat_out = {M_dot * self.H_ws_minus_cpTfw_J_kg / 1e6:7.2f} MW"
+                )
+
+        # 5) Steam pressure dynamics using the possibly limited M_dot and limited heat
         p_s_new = self._step_steam_pressure(
-            T_m1_new, T_m2_new, T_s, p_s, M_dot, dt
+            p_s_old=p_s,
+            T_s_old=T_s,
+            heat_ms_W=heat_ms_W,
+            M_dot_stm=M_dot,
+            dt=dt,
         )
 
-        # 5) Steam temperature from saturation
+        # 6) Steam temperature from saturation
         T_s_new = self._update_steam_temperature(p_s_new, T_s)
 
         # 6) Linear Ts check (optional diagnostic)

@@ -1,5 +1,4 @@
 import CoolProp.CoolProp as CoolProp
-from config_2 import Config as cfg
 
 
 # from ic_system import ICSystem as ICSystem
@@ -135,5 +134,8 @@ class TurbineModel:
         )
 
         return power_output, m_dot_steam_new
+
+
+
 
 

@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import replace
 
-from config_2 import Config
+from config import Config
 from plant_state import PlantState
 from ic_system import ICSystem
 

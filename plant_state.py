@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from config_2 import Config
+from config import Config
 
 cfg = Config()
 
@@ -11,11 +11,31 @@ class PlantState:
     # Primary loop
     T_hot_K: float = cfg.T_HOT_INIT_K
     T_cold_K: float = cfg.T_COLD_INIT_K
-    P_primary_Pa: float = cfg.P_PRI_INIT_Pa
+    P_primary_Pa: float = cfg.P_PRI_INIT_PA
     m_dot_primary_kg_s: float = cfg.M_DOT_PRI
 
+    # --- Steam generator temperatures (for plotting) ---
+    # Primary side around the SG
+    T_sg_primary_in_K: float = cfg.T_HOT_INIT_K   # hot leg into SG
+    T_sg_primary_out_K: float = cfg.T_COLD_INIT_K # cold leg out of SG
+    # Representative metal / secondary temperature (we'll set this from SG)
+    T_sg_metal_K: float = cfg.T_SAT_SEC_K
+
+    # --- NEW: Steam generator temperatures (for plotting) ---
+    # Primary side around the SG
+    T_sg_hot_K: float  = cfg.T_HOT_INIT_K   # hot leg entering SG
+    T_sg_sgi_K: float  = cfg.T_HOT_INIT_K   # SG inlet plenum
+    T_sg_p1_K: float   = cfg.T_HOT_INIT_K   # primary tube node 1
+    T_sg_p2_K: float   = cfg.T_HOT_INIT_K   # primary tube node 2
+    T_sg_sgu_K: float  = cfg.T_COLD_INIT_K  # SG outlet plenum
+    T_sg_cold_K: float = cfg.T_COLD_INIT_K  # cold leg leaving SG
+    # Secondary side / metal
+    T_sg_m1_K: float   = cfg.T_SAT_SEC_K    # metal node 1
+    T_sg_m2_K: float   = cfg.T_SAT_SEC_K    # metal node 2
+    T_sg_steam_K: float = cfg.T_SAT_SEC_K   # steam dome temperature
+
     # Steam/secondary
-    P_secondary_Pa: float = cfg.P_SEC_INIT_Pa
+    P_secondary_Pa: float = cfg.P_SEC_INIT_PA
     T_steam_K: float = cfg.T_SAT_SEC_K
     m_dot_steam_kg_s: float = cfg.M_DOT_SEC_KG_S
     sg_level_m: float = 0.0
@@ -29,7 +49,7 @@ class PlantState:
     # user commands
     load_demand_pu: float = 1.0                  # 0..1
     rod_mode: str = "auto"
-    rod_cmd_manual_pu: float = 0.55              # used when rod_mode='manual'
+    rod_cmd_manual_pu: float = 0.0              # used when rod_mode='manual'
 
     @property
     def Tavg_K(self) -> float:
@@ -76,7 +96,8 @@ class PlantState:
             "M_DOT_PRI": "m_dot_primary_kg_s",
             "P_SEC_INIT_PA": "P_secondary_Pa",
             "T_SAT_SEC_K": "T_steam_K",
-            "M_DOT_SEC": "m_dot_steam_kg_s",
+            "T_sat_sec_K": "T_steam_K",
+            "M_DOT_SEC_KG_S": "m_dot_steam_kg_s",
             "Q_CORE_NOMINAL_MW": "P_core_MW",
             "ROD_INSERT_INIT": "rod_pos_pu",
         }

@@ -112,6 +112,7 @@ def run(
     load_demand_pu: float = 1.0,
     rod_mode: str = "manual",
     rod_step_pu: float = 0.0,
+    early_stop: bool = True,
     csv_out: bool = True,
     csv_name: str = "run_log.csv",
     cfg=None,
@@ -161,13 +162,6 @@ def run(
         t_step=load_step_t_start,
         initial_load_pu=initial_load_pu,
     )
-
-    # If debug flag is set, freeze the load profile at the initial value
-    if getattr(cfg, "DEBUG_FREEZE_LOAD", False):
-        const_load = initial_load_pu
-
-        def load(_t: float, const_load=const_load) -> float:
-            return const_load
 
     N = int(cfg.t_final / cfg.dt) + 1
     t = np.zeros(N)
@@ -249,6 +243,19 @@ def run(
 
         ps = ps_next.clip_invariants()
 
+        # Early-stop logic (unchanged)
+        if early_stop and k > 20:
+            window = max(1, int(10.0 / cfg.dt))
+            if k > window:
+                if (np.max(np.abs(dTavg[k - window : k])) < 1e-3) and (
+                    np.max(np.abs(dPpri[k - window : k])) < 50.0
+                ):
+                    print(f"[early-stop] near steady-state at t={ps.t_s:.1f}s")
+                    break
+            if not (5e6 <= ps.P_primary_Pa <= 18e6):
+                print(f"[early-stop] primary pressure out of bounds at t={ps.t_s:.1f}s")
+                break
+
     # === Prepare data for plotting ===
     # Use only the portion of the arrays actually filled (handles early-stop)
     n_steps = k + 1  # k is the last index visited in the loop above
@@ -270,7 +277,11 @@ def run(
     sg_T_m2_plot = sg_T_m2[:n_steps]
 
     # Commands as functions of time
-    load_plot = np.array([load(ti) for ti in t_plot])
+    if getattr(cfg, "DEBUG_FREEZE_LOAD", False):
+        # freeze at 100% load in per-unit
+        load_plot = np.ones_like(t_plot)
+    else:
+        load_plot = np.array([load(ti) for ti in t_plot])
 
     # For rods, plot the requested delta-insertion command (per-unit of stroke).
     if rod_mode == "manual" and abs(rod_step_pu) > 0.0:
@@ -453,6 +464,7 @@ def main():
         load_demand_pu=load_demand_pu,
         rod_mode=rod_mode,
         rod_step_pu=rod_step_pu,
+        early_stop=False,
         csv_out=False,
         cfg=cfg,
     )

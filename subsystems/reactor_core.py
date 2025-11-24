@@ -51,8 +51,8 @@ f = 0.974  # % heat generated in fuel from AP1000 DCD Chapter 4, Table 4.1-1
 tau_f = (m_f * cp_f) / (UA)  # fuel-to-coolant heat transfer time constant
 tau_c = (m_c * cp_JpkgK) / (UA)  # time constant  for fuel-to-coolant heat transfer
 tau_r = m_c / W_kgps  # residence time of coolant in the core
-tau_rxi = 1.725  # s  Tcold_in -> T_core_inlet (downcomer + lower plenum lag)  (average of my calculation and Vajpayee numbers)
-tau_rxu = 2.1085  # s  Tc2 -> T_hot_leg (upper plenum hot-leg lag)  (average of my calculation and Vajpayee numbers)
+tau_rxi = 1.683  # s  Tcold_in -> T_core_inlet (downcomer + lower plenum lag)  (average of my calculation and Vajpayee numbers)
+tau_rxu = 2.064  # s  Tc2 -> T_hot_leg (upper plenum hot-leg lag)  (average of my calculation and Vajpayee numbers)
 f_bypass = 0.059  # Upper plenum bypass flow fraction (5.9%) - cooler flow bypasses core and mixes in upper plenum
 H_f = f * P_RATED_W / (m_f * cp_f)  # K/s per pu
 H_c = (1.0 - f) * P_RATED_W / (m_c * cp_JpkgK)  # K/s per pu
@@ -189,7 +189,7 @@ P_TURB_INIT = 1.0  # normalized turbine power at t=0
 
 # Programmed T_avg reference vs turbine load (linear "sliding" schedule)
 # Modest slope (order 10–20 K per p.u.) so Tref changes a few kelvin for a few-% load step.
-S_TAVG_K_PER_PU = 10.0  # specific slope
+S_TAVG_K_PER_PU = 16.7  # specific slope
 
 
 # Turbine demand at time t

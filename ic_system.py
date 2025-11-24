@@ -69,7 +69,6 @@ class ICSystem:
         self._manual_step_active = False
         self._manual_step_target_x = 0.0
         self._manual_step_dir = 0.0
-        self._psec_int = 0.0
 
     def step(self, ps: PlantState) -> PlantState:
         cfg = self.cfg
@@ -384,25 +383,17 @@ class ICSystem:
         # Base demand from the operator (per-unit)
         P_dem_pu = float(ps.load_demand_pu)
 
-        # --- Secondary pressure PI controller (acts like a main-steam valve) ---
-        # Define error such that:
-        #   p_err > 0  => P_secondary ABOVE nominal  => open valve (increase demand)
-        #   p_err < 0  => P_secondary BELOW nominal  => close valve (decrease demand)
+        # --- Simple secondary pressure controller ---
+        # If P_secondary > P_SEC_CONST: increase turbine demand (open valves)
+        # If P_secondary < P_SEC_CONST: decrease turbine demand (close valves)
         P_sec_nom = getattr(self.cfg, "P_SEC_CONST_PA", 5.764e6)
         if P_sec_nom > 0.0:
-            # Normalized pressure error
-            p_err = (ps.P_secondary_Pa - P_sec_nom) / P_sec_nom
+            # error > 0 means pressure is BELOW nominal
+            p_err = (P_sec_nom - ps.P_secondary_Pa) / P_sec_nom
 
-            # PI gains (dimensionless)
-            Kp = float(getattr(self.cfg, "Kp_PSEC", 0.0))
-            Ki = float(getattr(self.cfg, "Ki_PSEC", 0.0))
-
-            # Integrator update with simple anti-windup clamp
-            self._psec_int += p_err * Ki * dt
-            self._psec_int = max(-0.2, min(0.2, self._psec_int))
-
-            # Apply PI correction on top of operator demand
-            P_dem_pu += Kp * p_err + self._psec_int
+            # Proportional correction on demand
+            Kp = getattr(self.cfg, "Kp_PSEC", 0.0)
+            P_dem_pu -= Kp * p_err
 
         # Clamp demand to a reasonable range
         P_dem_pu = max(0.0, min(1.2, P_dem_pu))

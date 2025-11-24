@@ -50,8 +50,6 @@ class PlantState:
     load_demand_pu: float = 1.0                  # 0..1
     rod_mode: str = "auto"
     rod_cmd_manual_pu: float = 0.0              # used when rod_mode='manual'
-    steam_valve_cmd_pu: float = 1.0             # 0..1, commanded main-steam valve opening (from PI)
-    steam_valve_pos_pu: float = 1.0             # 0..1, actual main-steam valve position (for plotting)
 
     @property
     def Tavg_K(self) -> float:
@@ -74,15 +72,12 @@ class PlantState:
         rod    = float(min(1.0, max(0.0, self.rod_pos_pu)))
         ld     = float(min(1.0, max(0.0, self.load_demand_pu)))
         rodm   = float(min(1.0, max(-1.0, self.rod_cmd_manual_pu)))
-        vcmd   = float(min(1.0, max(0.0, self.steam_valve_cmd_pu)))
-        vpos   = float(min(1.0, max(0.0, self.steam_valve_pos_pu)))
 
         return replace(self,
             T_hot_K=T_hot, T_cold_K=T_cold, P_primary_Pa=P_pri, P_secondary_Pa=P_sec,
             m_dot_primary_kg_s=mdotp, m_dot_steam_kg_s=mdots,
             T_steam_K=Tsteam, sg_level_m=sgL,
-            rod_pos_pu=rod, load_demand_pu=ld, rod_cmd_manual_pu=rodm,
-            steam_valve_cmd_pu=vcmd, steam_valve_pos_pu=vpos
+            rod_pos_pu=rod, load_demand_pu=ld, rod_cmd_manual_pu=rodm
         )
 
     @staticmethod

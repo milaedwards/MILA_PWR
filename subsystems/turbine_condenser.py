@@ -1,6 +1,5 @@
 import CoolProp.CoolProp as CoolProp
-import numpy as np
-from config import Config
+
 
 # from ic_system import ICSystem as ICSystem
 # from plant_state import PlantState as plant_state
@@ -21,22 +20,6 @@ class TurbineModel:
 
         self.outlet_p = 5000                # in Pascals
         self.calibration_factor = None      # set on first call to step() to remove initial power mismatch
-
-        # --- Secondary-pressure PI control for steam flow (to be called from IC_System) ---
-        # Use Config for nominal steam-flow and secondary pressure setpoint
-        self.cfg = Config()
-
-        # Nominal main-steam mass flow (kg/s) and secondary pressure setpoint (Pa)
-        self.m_dot_steam_nom_kg_s = getattr(self.cfg, "M_DOT_STEAM_NOM_KG_S", 0.0)
-        self.P_sec_set_Pa = getattr(self.cfg, "P_SEC_CONST_PA", 0.0)
-
-        # PI gains for pressure control (units: kg/s/Pa for Kp, kg/(s·Pa) for Ki)
-        # These are starting-point values and may need tuning.
-        self.Kp_p = 0.0
-        self.Ki_p = 0.0
-
-        # Integrator state for pressure controller
-        self._p_err_int = 0.0
 
     def turbine_power(self, inlet_p, inlet_t, outlet_p, m_dot_steam):
         """Calculate actual specific turbine work using isentropic thermodynamics"""
@@ -103,59 +86,6 @@ class TurbineModel:
             m_dot_new = 0.0
 
         return m_dot_new
-
-    def pressure_pi_mass_flow_cmd(self, P_secondary_Pa: float, dt: float) -> float:
-        """
-        Compute a commanded main-steam mass-flow rate using a PI controller
-        on secondary / steam-dome pressure.
-
-        Parameters
-        ----------
-        P_secondary_Pa : float
-            Current secondary (steam-dome) pressure in Pa.
-        dt : float
-            Integration time step [s] for updating the PI integrator.
-
-        Returns
-        -------
-        float
-            Commanded main-steam mass flow [kg/s].
-        """
-        # Guard against missing config or zero dt
-        if dt <= 0.0:
-            return self.m_dot_steam_nom_kg_s
-
-        # If we don't have reasonable nominal values, just return the input nominal
-        if self.m_dot_steam_nom_kg_s <= 0.0 or self.P_sec_set_Pa <= 0.0:
-            return self.m_dot_steam_nom_kg_s
-
-        # Pressure error: positive if actual pressure is below setpoint
-        # so that the controller opens the valve / increases flow.
-        p_err = self.P_sec_set_Pa - P_secondary_Pa
-
-        # Update integrator
-        self._p_err_int += p_err * dt
-
-        # Raw PI output around nominal flow
-        m_dot_cmd = (
-            self.m_dot_steam_nom_kg_s
-            + self.Kp_p * p_err
-            + self.Ki_p * self._p_err_int
-        )
-
-        # Simple anti-windup: if we clamp the output, also clamp integrator so it
-        # doesn't run away.
-        # Allow some margin around nominal, e.g. 20% up/down by default.
-        m_dot_min = 0.5 * self.m_dot_steam_nom_kg_s
-        m_dot_max = 1.5 * self.m_dot_steam_nom_kg_s
-
-        m_dot_clamped = float(np.clip(m_dot_cmd, m_dot_min, m_dot_max))
-
-        # If we hit a limit, back out the last integrator step (very simple anti-windup)
-        if m_dot_clamped != m_dot_cmd:
-            self._p_err_int -= p_err * dt
-
-        return m_dot_clamped
 
     # ======================================================
     #                   MAIN STEP FUNCTION

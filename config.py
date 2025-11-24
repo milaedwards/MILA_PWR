@@ -42,8 +42,7 @@ class Config:
     M_DOT_SEC_KG_S: float = 1887.4           # [kg/s] main steam / feed flow
 
     # Simple secondary pressure controller (turbine demand bias)
-    Kp_PSEC: float = 0.00000001                # [-] proportional gain
-    Ki_PSEC: float = 0.0000000001              # [-] integral gain
+    Kp_PSEC: float = 0.1                # [-] proportional gain
 
     # ---------------- Initial conditions ----------------
     T_HOT_INIT_K: float = 596.483    # [K] initial hot-leg temp

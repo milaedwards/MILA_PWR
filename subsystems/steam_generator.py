@@ -1,5 +1,3 @@
-# sg.py
-
 from dataclasses import dataclass, field
 
 try:
@@ -301,7 +299,8 @@ class SG:
         dt     = s["dt"]      # [s]
 
         # Core power per loop [W]; limit SG heat to this
-        Q_core_loop_W = float(s["Q_core_W"])
+        Q_core_total_W = float(s["Q_core_W"])
+        Q_core_loop_W = Q_core_total_W / self.cfg.N_LOOPS
         Q_core_loop_W = max(Q_core_loop_W, 0.0)
 
         # 1) RXU → hot leg → SG inlet
@@ -340,16 +339,16 @@ class SG:
             net_Q_W = heat_ms_W - M_dot * self.H_ws_minus_cpTfw_J_kg
 
             # Only print occasionally so you don't spam the console
-            if not hasattr(self, "_debug_counter"):
-                self._debug_counter = 0
-            self._debug_counter += 1
+            #if not hasattr(self, "_debug_counter"):
+            #    self._debug_counter = 0
+            #self._debug_counter += 1
 
-            if self._debug_counter % 10 == 0:  # every 10 SG steps
-                print(
-                    f"[SG] net_Q = {net_Q_W / 1e6:7.2f} MW, "
-                    f"heat_in = {heat_ms_W / 1e6:7.2f} MW, "
-                    f"heat_out = {M_dot * self.H_ws_minus_cpTfw_J_kg / 1e6:7.2f} MW"
-                )
+            #if self._debug_counter % 10 == 0:  # every 10 SG steps
+            #    print(
+            #        f"[SG] net_Q = {net_Q_W / 1e6:7.2f} MW, "
+            #        f"heat_in = {heat_ms_W / 1e6:7.2f} MW, "
+            #        f"heat_out = {M_dot * self.H_ws_minus_cpTfw_J_kg / 1e6:7.2f} MW"
+            #    )
 
         # 5) Steam pressure dynamics using the possibly limited M_dot and limited heat
         p_s_new = self._step_steam_pressure(
@@ -390,3 +389,5 @@ class SG:
             "T_s_new": T_s_new,        # [K]
             "M_dot_stm_new": M_dot,  # [kg/s]
         }
+
+

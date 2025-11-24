@@ -11,8 +11,14 @@ except ImportError:
 class Config:
     # ---------------- Simulation ----------------
     dt: float = 0.1              # [s] integration time step
-    t_final: float = 1000.0       # [s] total simulation time
+    t_final: float = 300.0       # [s] total simulation time
     log_every_n: int = 1         # [-] print/log interval
+
+    # STEADY_STATE_DEBUG = False  # set False for normal runs
+    # N_DEBUG_STEPS = 300  # just a few steps
+    # EXPERIMENT1_FREEZE_SG: bool = False
+    DEBUG_FREEZE_REACTIVITY: bool = False
+    DEBUG_FREEZE_LOAD: bool = False
 
     SOLVER_METHOD_REACTOR: str = "Radau"  # [-] ODE solver method [8]
     SOLVER_RTOL_REACTOR: float = 1.0e-6   # [-] relative tolerance [8]
@@ -36,7 +42,8 @@ class Config:
     M_DOT_SEC_KG_S: float = 1887.4           # [kg/s] main steam / feed flow
 
     # Simple secondary pressure controller (turbine demand bias)
-    Kp_PSEC: float = 0.1                # [-] proportional gain
+    Kp_PSEC: float = 0.00000001                # [-] proportional gain
+    Ki_PSEC: float = 0.0000000001              # [-] integral gain
 
     # ---------------- Initial conditions ----------------
     T_HOT_INIT_K: float = 596.483    # [K] initial hot-leg temp

@@ -112,7 +112,6 @@ def run(
     load_demand_pu: float = 1.0,
     rod_mode: str = "manual",
     rod_step_pu: float = 0.0,
-    early_stop: bool = True,
     csv_out: bool = True,
     csv_name: str = "run_log.csv",
     cfg=None,
@@ -153,6 +152,7 @@ def run(
         cfg=cfg,
     )
 
+
     # Build a load profile that holds the initial plant load until
     # load_step_t_start, then steps to the user-requested load_demand_pu.
     initial_load_pu = ps.load_demand_pu
@@ -161,6 +161,13 @@ def run(
         t_step=load_step_t_start,
         initial_load_pu=initial_load_pu,
     )
+
+    # If debug flag is set, freeze the load profile at the initial value
+    if getattr(cfg, "DEBUG_FREEZE_LOAD", False):
+        const_load = initial_load_pu
+
+        def load(_t: float, const_load=const_load) -> float:
+            return const_load
 
     N = int(cfg.t_final / cfg.dt) + 1
     t = np.zeros(N)
@@ -180,7 +187,8 @@ def run(
 
     sg_Tp_in = np.full(N, np.nan)
     sg_Tp_out = np.full(N, np.nan)
-    sg_T_metal = np.full(N, np.nan)
+    sg_T_m1 = np.full(N, np.nan)
+    sg_T_m2 = np.full(N, np.nan)
 
     for k in range(N):
         # Log current state
@@ -205,9 +213,13 @@ def run(
         if val_out is not None:
             sg_Tp_out[k] = val_out
 
-        val_m = getattr(ps, "T_sg_metal_K", None)
-        if val_m is not None:
-            sg_T_metal[k] = val_m
+        val_m1 = getattr(ps, "T_sg_m1_K", None)
+        if val_m1 is not None:
+            sg_T_m1[k] = val_m1
+
+        val_m2 = getattr(ps, "T_sg_m2_K", None)
+        if val_m2 is not None:
+            sg_T_m2[k] = val_m2
 
         # Advance time and apply user commands
         ps = ps.copy_advance_time(cfg.dt).clip_invariants()
@@ -237,19 +249,6 @@ def run(
 
         ps = ps_next.clip_invariants()
 
-        # Early-stop logic (unchanged)
-        if early_stop and k > 20:
-            window = max(1, int(10.0 / cfg.dt))
-            if k > window:
-                if (np.max(np.abs(dTavg[k - window : k])) < 1e-3) and (
-                    np.max(np.abs(dPpri[k - window : k])) < 50.0
-                ):
-                    print(f"[early-stop] near steady-state at t={ps.t_s:.1f}s")
-                    break
-            if not (5e6 <= ps.P_primary_Pa <= 18e6):
-                print(f"[early-stop] primary pressure out of bounds at t={ps.t_s:.1f}s")
-                break
-
     # === Prepare data for plotting ===
     # Use only the portion of the arrays actually filled (handles early-stop)
     n_steps = k + 1  # k is the last index visited in the loop above
@@ -267,10 +266,12 @@ def run(
 
     sg_Tp_in_plot = sg_Tp_in[:n_steps]
     sg_Tp_out_plot = sg_Tp_out[:n_steps]
-    sg_T_metal_plot = sg_T_metal[:n_steps]
+    sg_T_m1_plot = sg_T_m1[:n_steps]
+    sg_T_m2_plot = sg_T_m2[:n_steps]
 
     # Commands as functions of time
     load_plot = np.array([load(ti) for ti in t_plot])
+
     # For rods, plot the requested delta-insertion command (per-unit of stroke).
     if rod_mode == "manual" and abs(rod_step_pu) > 0.0:
         # Show a step in the commanded insertion starting at rod_step_t_start.
@@ -355,8 +356,11 @@ def run(
     if not np.all(np.isnan(sg_Tp_out_plot)):
         ax.plot(t_plot, sg_Tp_out_plot, label="T_sg_primary_out [K]")
         any_plotted = True
-    if not np.all(np.isnan(sg_T_metal_plot)):
-        ax.plot(t_plot, sg_T_metal_plot, label="T_sg_metal [K]")
+    if not np.all(np.isnan(sg_T_m1_plot)):
+        ax.plot(t_plot, sg_T_m1_plot, label="T_sg_metal_side1 [K]")
+        any_plotted = True
+    if not np.all(np.isnan(sg_T_m2_plot)):
+        ax.plot(t_plot, sg_T_m2_plot, label="T_sg_metal_side2 [K]")
         any_plotted = True
 
     if not any_plotted:
@@ -449,11 +453,12 @@ def main():
         load_demand_pu=load_demand_pu,
         rod_mode=rod_mode,
         rod_step_pu=rod_step_pu,
-        early_stop=False,
         csv_out=False,
         cfg=cfg,
     )
 
 if __name__ == "__main__":
     main()
+
+
 

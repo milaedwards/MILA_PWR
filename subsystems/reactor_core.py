@@ -219,8 +219,8 @@ def _deadband(e: float, db: float) -> float:
 @dataclass
 class ControlParams:
     # PI Controller Gains
-    Kp: float = 0.00030  # proportional gain
-    Ki: float = 0.000015  # integral gain
+    Kp_temp: float = 0.00030  # proportional gain
+    Ki_temp: float = 0.000015  # integral gain
 
     # Power Tracking Controller
     Kpow_i: float = 0.30  # power gain
@@ -289,10 +289,11 @@ class ReactorSimulator:
         self.Tf = self.fb.T_f0
         self.Tc1 = self.fb.Tc10
         self.Tc2 = self.fb.Tc20
-        self.T_core_inlet = Tc_init  # (553.82 K)
-        f_bypass = 0.059
-        T_mix0 = (1 - f_bypass) * self.fb.Tc20 + f_bypass * Tc_init
-        self.T_hot_leg = T_mix0
+        self.T_core_inlet = Tc_init
+
+        # Start the hot leg at the plant-level nominal hot-leg temperature
+        # so it matches PlantState and Config at t = 0.
+        self.T_hot_leg = float(getattr(self.cfg, "T_HOT_INIT_K", self.Tc2))
 
         # Point kinetics state
         self.n = 1.0  # normalized neutron population
@@ -362,6 +363,13 @@ class ReactorSimulator:
         rho_tot_pcm = rho_fb_pcm + rho_rod_pcm + rho_ext_pcm
         rho_tot = rho_tot_pcm * PCM_TO_DK
 
+        if self.cfg.DEBUG_FREEZE_REACTIVITY:
+            # Force core to stay exactly critical at full power
+            rho_tot_pcm = 0.0
+            rho_fb_pcm = 0.0
+            rho_rod_pcm = 0.0
+            rho_ext_pcm = 0.0
+
         # Store for diagnostics / IC system
         self.rho_pcm = float(rho_tot_pcm)
         self.rho_dk = float(rho_tot)
@@ -400,96 +408,16 @@ class ReactorSimulator:
 
         # CONTROL SYSTEM
         if self.control_mode == "auto":
-            # -----------------------------------------------------
-            # HOLD RODS & INTEGRATORS BEFORE THE LOAD CUT
-            # -----------------------------------------------------
-            if t < STEP_T_S:
-                # No rod motion; freeze integrals so we stay at
-                # the exact equilibrium until the load cut.
-                dx_dt = 0.0
-                dz_integral_dt = 0.0
-                dz_pow_bias_dt = 0.0
+            # Simple Tavg-based PI controller
+            T_avg_meas = 0.5 * (T_core_inlet + T_hot_leg)
+            T_ref = getattr(self.cfg, "T_COOLANT_AVG_REF_K", self.fb.T_m0)
+            e_temp = T_avg_meas - T_ref
 
-            else:
-                # -------------------------------------------------
-                # NORMAL AUTO CONTROL AFTER t >= STEP_T_S
-                # -------------------------------------------------
-                # Use Mann/Holbert first coolant lump (Tc1) as core-average coolant temperature (θ1)
-                # for control. Instrumentation-based Tavg is still available for diagnostics/plots.
-                T_avg = Tc1
-                T_ref = Tref(P_turb, self.fb)
-
-                # Temperature Error with Deadband
-                e_temp_raw = T_avg - T_ref
-                e_temp = _deadband(e_temp_raw, self.ctrl.DB_K)
-
-                # Power Error with Deadband
-                P_ref = P_turb  # Power should follow turbine load
-                e_pow_raw = P_ref - P_pu
-                # Only react to power errors larger than deadband
-                e_pow = e_pow_raw if abs(e_pow_raw) > self.ctrl.P_DEADBAND else 0.0
-
-                # Feedforward Compensation for load changes
-                if not hasattr(self, '_P_turb_prev'):
-                    self._P_turb_prev = P_turb
-                dP_turb = P_turb - self._P_turb_prev
-                self._P_turb_prev = P_turb
-                u_ff = self.ctrl.Kff * dP_turb
-
-                # Outer Loop: Power Tracking Bias
-                # Clamp power bias to prevent excessive temperature adjustments
-                z_pow_clamped = np.clip(
-                    z_pow_bias,
-                    -self.ctrl.Z_BIAS_MAX,
-                    self.ctrl.Z_BIAS_MAX
-                )
-
-                # Apply power bias to temperature setpoint (slowly adjusts Tref based on power error)
-                T_ref_adjusted = T_ref + z_pow_clamped
-
-                # Recalculate temperature error with adjusted setpoint
-                e_temp_with_bias = _deadband(T_avg - T_ref_adjusted, self.ctrl.DB_K)
-
-                # Inner Loop: PI Control with Anti-Windup
-                # Calculate unsaturated PI output
-                u_pi_unsaturated = self.ctrl.Kp * e_temp_with_bias + self.ctrl.Ki * z_integral
-
-                # Apply Rate Limiting to max rod travel
-                u_total_unsaturated = u_pi_unsaturated + u_ff
-                u_total = np.clip(u_total_unsaturated, -self.ctrl.U_MAX, self.ctrl.U_MAX)
-                dx_dt = u_total
-
-                # Conditional Integration with Anti-Windup if pushing into saturation
-                pushing_saturation = (
-                        abs(u_total) >= self.ctrl.U_MAX and
-                        np.sign(u_total) == np.sign(u_total_unsaturated)
-                )
-
-                if pushing_saturation:
-                    # Anti-windup: unwind integral when saturated
-                    dz_integral_dt = (
-                            (u_total - u_total_unsaturated) / self.ctrl.K_AW -
-                            self.ctrl.LEAK * z_integral
-                    )
-                else:
-                    # Normal integration: error + back-calculation + leak
-                    dz_integral_dt = (
-                            e_temp_with_bias +
-                            (u_total - u_total_unsaturated) / self.ctrl.K_AW -
-                            self.ctrl.LEAK * z_integral
-                    )
-
-                # Outer Loop Power Bias Integral
-                # Check if power bias is saturated
-                if abs(z_pow_clamped) >= self.ctrl.Z_BIAS_MAX and np.sign(z_pow_bias) == np.sign(e_pow):
-                    # Stop integrating if saturated and pushing further
-                    dz_pow_bias_dt = 0.0
-                else:
-                    # Normal integration with leak: bias Tref based on power error
-                    dz_pow_bias_dt = (
-                            self.ctrl.Kpow_i * e_pow -
-                            self.ctrl.LEAK_OUTER * z_pow_bias
-                    )
+            dz_integral_dt = e_temp - self.ctrl.LEAK * z_integral
+            z_int = np.clip(z_integral, -0.1, 0.1)
+            u_pi = self.ctrl.Kp_temp * e_temp + self.ctrl.Ki_temp * z_int
+            dx_dt = np.clip(u_pi, -self.ctrl.U_MAX, self.ctrl.U_MAX)
+            dz_pow_bias_dt = 0.0
 
         else:
             # Manual Rod Mode ignores controllers and uses externally commanded rod speed, but within physical rod limits
@@ -993,4 +921,3 @@ if __name__ == "__main__":
     # Commenting out 4 scenarios internal test lines below
     # results = run_four_scenarios()
     # plot_four_scenarios(results)
-

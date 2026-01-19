@@ -3,53 +3,44 @@ from config import Config
 
 cfg = Config()
 
+
 @dataclass
 class PlantState:
     # Time
     t_s: float = 0.0
 
     # Primary loop
-    T_hot_K: float = cfg.T_HOT_INIT_K
-    T_cold_K: float = cfg.T_COLD_INIT_K
-    P_primary_Pa: float = cfg.P_PRI_INIT_PA
-    m_dot_primary_kg_s: float = cfg.M_DOT_PRI
+    T_hot_K: float = cfg.T_hot_nom_K
+    T_cold_K: float = cfg.T_cold_nom_K
+    P_primary_Pa: float = cfg.P_pri_nom_Pa
+    m_dot_primary_kg_s: float = cfg.m_dot_primary_nom_kg_s
 
     # --- Steam generator temperatures (for plotting) ---
     # Primary side around the SG
-    T_sg_primary_in_K: float = cfg.T_HOT_INIT_K   # hot leg into SG
-    T_sg_primary_out_K: float = cfg.T_COLD_INIT_K # cold leg out of SG
-    # Representative metal / secondary temperature (we'll set this from SG)
-    T_sg_metal_K: float = cfg.T_SAT_SEC_K
+    T_sg_in_K: float = cfg.T_hot_nom_K
+    T_sg_out_K: float = cfg.T_cold_nom_K
 
-    # --- NEW: Steam generator temperatures (for plotting) ---
-    # Primary side around the SG
-    T_sg_hot_K: float  = cfg.T_HOT_INIT_K   # hot leg entering SG
-    T_sg_sgi_K: float  = cfg.T_HOT_INIT_K   # SG inlet plenum
-    T_sg_p1_K: float   = cfg.T_HOT_INIT_K   # primary tube node 1
-    T_sg_p2_K: float   = cfg.T_HOT_INIT_K   # primary tube node 2
-    T_sg_sgu_K: float  = cfg.T_COLD_INIT_K  # SG outlet plenum
-    T_sg_cold_K: float = cfg.T_COLD_INIT_K  # cold leg leaving SG
-    # Secondary side / metal
-    T_sg_m1_K: float   = cfg.T_SAT_SEC_K    # metal node 1
-    T_sg_m2_K: float   = cfg.T_SAT_SEC_K    # metal node 2
-    T_sg_steam_K: float = cfg.T_SAT_SEC_K   # steam dome temperature
+    T_metal_K: float = cfg.T_metal_nom_K  # average metal temperature
+    T_sec_K: float = cfg.T_sec_nom_K      # steam dome temperature
+
+    m_dot_steam_cmd_kg_s: float = cfg.m_dot_steam_nom_kg_s
 
     # Steam/secondary
-    P_secondary_Pa: float = cfg.P_SEC_INIT_PA
-    T_steam_K: float = cfg.T_SAT_SEC_K
-    m_dot_steam_kg_s: float = cfg.M_DOT_SEC_KG_S
-    sg_level_m: float = 0.0
+    P_secondary_Pa: float = cfg.P_sec_nom_Pa
+    m_dot_steam_kg_s: float = cfg.m_dot_steam_nom_kg_s
+    steam_h_J_kg: float = cfg.h_steam_J_kg
+    sg_power_limited: bool = False
 
     # Power + reactivity (stored in MW)
-    P_core_MW: float = cfg.Q_CORE_NOMINAL_MW
-    P_turbine_MW: float = cfg.P_RATED_MWe
-    rod_pos_pu: float = cfg.ROD_INSERT_INIT      # 0=withdrawn, 1=inserted
-    rho_reactivity_dk: float = 0.0               # Δk/k
+    P_core_MW: float = cfg.P_core_nom_MWt
+    P_turbine_MW: float = cfg.P_e_nom_MWe
+    rod_pos_pu: float = cfg.rod_insert_nom      # 0 = withdrawn, 1 = inserted
+    rho_reactivity_dk: float = 0.0              # Δk/k
 
     # user commands
-    load_demand_pu: float = 1.0                  # 0..1
+    load_demand_pu: float = 1.0                 # 0..1
     rod_mode: str = "auto"
-    rod_cmd_manual_pu: float = 0.0              # used when rod_mode='manual'
+    rod_cmd_manual_pu: float = 0.0              # used when rod_mode = 'manual'
 
     @property
     def Tavg_K(self) -> float:
@@ -60,49 +51,32 @@ class PlantState:
 
     def clip_invariants(self) -> "PlantState":
         # bounds (broad; move to Config later if needed)
-        T_hot  = float(max(250.0, min(1100.0, self.T_hot_K)))
+        T_hot = float(max(250.0, min(1100.0, self.T_hot_K)))
         T_cold = float(max(250.0, min(1100.0, self.T_cold_K)))
-        P_pri  = float(max(1.0e5, self.P_primary_Pa))
-        P_sec  = float(max(1.0e5, self.P_secondary_Pa))
-        mdotp  = float(max(0.0, self.m_dot_primary_kg_s))
-        mdots  = float(max(0.0, self.m_dot_steam_kg_s))
-        Tsteam = float(max(250.0, min(1100.0, self.T_steam_K)))
-        # pzrL   = float(max(0.0, self.pzr_level_m))
-        sgL    = float(max(0.0, self.sg_level_m))
-        rod    = float(min(1.0, max(0.0, self.rod_pos_pu)))
-        ld     = float(min(1.0, max(0.0, self.load_demand_pu)))
-        rodm   = float(min(1.0, max(-1.0, self.rod_cmd_manual_pu)))
+        P_pri = float(max(1.0e5, self.P_primary_Pa))
+        P_sec = float(max(1.0e5, self.P_secondary_Pa))
+        mdotp = float(max(0.0, self.m_dot_primary_kg_s))
+        mdots = float(max(0.0, self.m_dot_steam_kg_s))
+        Tsteam = float(max(250.0, min(1100.0, self.T_sec_K)))
+        Tmetal = float(max(250.0, min(1100.0, self.T_metal_K)))
+        rod = float(max(0.0, min(1.0, self.rod_pos_pu)))
+        ld = float(max(0.0, min(1.2, self.load_demand_pu)))
+        rodm = float(max(-1.0, min(1.0, self.rod_cmd_manual_pu)))
+        hsteam = float(self.steam_h_J_kg)
 
-        return replace(self,
-            T_hot_K=T_hot, T_cold_K=T_cold, P_primary_Pa=P_pri, P_secondary_Pa=P_sec,
-            m_dot_primary_kg_s=mdotp, m_dot_steam_kg_s=mdots,
-            T_steam_K=Tsteam, sg_level_m=sgL,
-            rod_pos_pu=rod, load_demand_pu=ld, rod_cmd_manual_pu=rodm
+        return replace(
+            self,
+            T_hot_K=T_hot,
+            T_cold_K=T_cold,
+            P_primary_Pa=P_pri,
+            P_secondary_Pa=P_sec,
+            m_dot_primary_kg_s=mdotp,
+            m_dot_steam_kg_s=mdots,
+            steam_h_J_kg=hsteam,
+            sg_power_limited=self.sg_power_limited,
+            T_sec_K=Tsteam,
+            T_metal_K=Tmetal,
+            rod_pos_pu=rod,
+            load_demand_pu=ld,
+            rod_cmd_manual_pu=rodm,
         )
-
-    @staticmethod
-    def init_default() -> "PlantState":
-        return PlantState()
-
-    @staticmethod
-    def init_from_config(custom_cfg) -> "PlantState":
-        # Start from current defaults
-        base = PlantState()
-
-        mapping = {
-            "T_HOT_INIT_K": "T_hot_K",
-            "T_COLD_INIT_K": "T_cold_K",
-            "P_PRI_INIT_PA": "P_primary_Pa",
-            "M_DOT_PRI": "m_dot_primary_kg_s",
-            "P_SEC_INIT_PA": "P_secondary_Pa",
-            "T_SAT_SEC_K": "T_steam_K",
-            "T_sat_sec_K": "T_steam_K",
-            "M_DOT_SEC_KG_S": "m_dot_steam_kg_s",
-            "Q_CORE_NOMINAL_MW": "P_core_MW",
-            "ROD_INSERT_INIT": "rod_pos_pu",
-        }
-        data = base.__dict__.copy()
-        for cfg_key, field_name in mapping.items():
-            if hasattr(custom_cfg, cfg_key):
-                data[field_name] = getattr(custom_cfg, cfg_key)
-        return PlantState(**data).clip_invariants()

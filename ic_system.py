@@ -73,20 +73,16 @@ class ICSystem:
 
         # 1) Advance reactor core
         manual_u: Optional[float] = None
+        # 1) Advance reactor core
         if ps.rod_mode == "manual":
-            manual_u = self.update_manual_step(ps.rod_pos_pu)
+            manual_u = float(ps.rod_cmd_manual_pu)  # <-- use user input directly
         else:
-            # If switching back to auto, clear manual step state
-            self._manual_step_active = False
-            self._manual_step_target_x = 0.0
-            self._manual_step_dir = 0.0
-            manual_u = None
-
+            manual_u = 0.0  # keep a float so reactor_core never sees None
 
         T_hot_K, P_core_MWt = self.reactor.step(
             Tc_in=ps.T_cold_K,
             dt=dt,
-            P_turb=ps.load_demand_pu,  # measured turbine power in p.u.
+            P_turb=ps.load_demand_pu,
             control_mode=ps.rod_mode,
             manual_u=manual_u,
         )
@@ -100,20 +96,36 @@ class ICSystem:
             T_hot_K=float(T_hot_K),
             P_core_MW=float(P_core_MWt),
             rho_reactivity_dk=float(rho),
+            rod_pos_pu=float(getattr(self.reactor, "x", ps.rod_pos_pu)),
         )
 
         # 2) Advance steam generator
-        # Debug: what command does the SG see?
-        if ps.t_s < 1.0:
-            print(f"[cmd] t={ps.t_s:.2f} s, m_dot_cmd={ps.m_dot_steam_cmd_kg_s:.1f} kg/s")
+        Q_core_W = ps.P_core_MW * 1e6
         T_cold_K, m_dot_steam_actual_kg_s, P_sec_Pa, T_sec_K, sg_limited, h_steam = self.steamgen.step(
             ps.T_hot_K,
+            Q_core_W,
             ps.m_dot_steam_cmd_kg_s,
             dt,
         )
-        # Debug: what flow did the SG actually deliver?
-        if ps.t_s < 1.0:
-            print(f"[SG] delivered m_dot={m_dot_steam_actual_kg_s:.1f} kg/s")
+
+        if ps.t_s <= dt:
+            print(
+                f"[IC t={ps.t_s:6.3f}] SG: "
+                f"cmd={ps.m_dot_steam_cmd_kg_s:8.2f} -> act={m_dot_steam_actual_kg_s:8.2f} kg/s | "
+                f"Psec={P_sec_Pa / 1e6:6.3f} MPa | "
+                f"h={h_steam / 1e6:6.3f} MJ/kg | "
+                f"limited={sg_limited}"
+            )
+
+        if ps.t_s <= 1.0:
+            caps = getattr(self.steamgen, "_dbg_caps", None)
+            if caps:
+                print(f"[IC t={ps.t_s:6.3f}] SG caps: "
+                      f"heat_cap={caps['heat_cap']:.2f} "
+                      f"pressure_cap={caps['pressure_cap']:.2f} "
+                      f"cmd={caps['cmd']:.2f} "
+                      f"q_ms={caps['q_ms_MW']:.2f}MW "
+                      f"dh={caps['delta_h_MJkg']:.3f}MJ/kg")
 
         ps = replace(
             ps,
@@ -140,14 +152,51 @@ class ICSystem:
         P_turb_MW, m_dot_steam_cmd_new = self.turbine.step(
             inlet_h=ps.steam_h_J_kg,
             inlet_p=ps.P_secondary_Pa,
-            m_dot_steam=ps.m_dot_steam_kg_s,
+            #m_dot_steam=ps.m_dot_steam_kg_s,
+            m_dot_cmd=ps.m_dot_steam_cmd_kg_s,
+            m_dot_actual=ps.m_dot_steam_kg_s,
             power_dem=P_dem_MW,
             dt=dt,
         )
 
-        if sg_limited:
+        if ps.t_s <= dt:
+            print(
+                f"[IC t={ps.t_s:6.3f}] TB: "
+                f"Pturb={P_turb_MW:8.2f} MWe | "
+                f"cmd_prev={ps.m_dot_steam_cmd_kg_s:8.2f} -> cmd_next={m_dot_steam_cmd_new:8.2f} | "
+                f"m_act={ps.m_dot_steam_kg_s:8.2f} | "
+                f"Psec_in={ps.P_secondary_Pa / 1e6:6.3f} MPa"
+            )
+
+        #if sg_limited:
             # If SG is limiting, clamp turbine command to actual SG flow
-            m_dot_steam_cmd_new = ps.m_dot_steam_kg_s
+        #    m_dot_steam_cmd_new = ps.m_dot_steam_kg_s
+
+        # don't force cmd down when SG is limiting
+        # just keep cmd bounded
+        m_dot_steam_cmd_new = max(0.0, min(m_dot_steam_cmd_new, 1.25 * self.cfg.m_dot_steam_nom_kg_s))
+
+        # --- DEBUG: demand vs measured turbine vs steam cmd ---
+        # Initialize one-time helper
+        if not hasattr(self, "_dbg_next_print_s"):
+            self._dbg_next_print_s = 0.0
+
+        # Print for first 5 seconds, then every 10 seconds
+        """
+        if ps.t_s < 5.0 or ps.t_s >= self._dbg_next_print_s:
+            power_dem_MWe = ps.load_demand_pu * self.cfg.P_e_nom_MWe  # demand in MWe
+
+            print(
+                f"[t={ps.t_s:6.2f}s] "
+                f"power_dem={power_dem_MWe:8.2f} MWe | "
+                f"P_turb={P_turb_MW:8.2f} MWe | "
+                f"m_dot_cmd={m_dot_steam_cmd_new:8.2f} kg/s"
+            )
+
+            if ps.t_s >= self._dbg_next_print_s:
+                self._dbg_next_print_s += 10.0
+        """
+        # -------------------------------------------------------
 
         ps = replace(
             ps,

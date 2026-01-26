@@ -41,22 +41,23 @@ X_OP = 0.57  # 57% = initial rod insertion at BOC-HFP critical operations
 U = 1172.078  # W/m²·K, fuel-to-coolant heat transfer coefficient, calculated using average from Kerlin (H.B. Robinson) and Masoud/Appendix J values for delta_T_f-c
 A = 5267.6  # m², active heat transfer surface area from AP1000 DCD Chapter 4, Table 4.4-1
 UA = U * A  # W/K
-m_f = 95974.7 # kg UO2 from AP1000 DCD Chapter 4, Table 4.1-1
-cp_f = 313 # J/kg-K specific heat of fuel from Table 4.3 of Oak Ridge National Labs paper: https://info.ornl.gov/sites/publications/Files/Pub57523.pdf
-m_c = 12649.23 # kg coolant in core (calculated on 11/9/2025) m_c = (W*H)/v_c
-cp_JpkgK = 5541.398 # J/kg-K, specific heat capcity of coolant was 5545 from enghandbook.  NEW calculated value from
-W_kgps = 14275.56   # kg/s, effective mass flow rate of coolant in core (113.3 x 10^6 lbm/hr) from AP1000 DCD Chapter 5, Table 5.1-3
-f = 0.974 # % heat generated in fuel from AP1000 DCD Chapter 4, Table 4.1-1
-tau_f = (m_f * cp_f) / (UA) # fuel-to-coolant heat transfer time constant
+m_f = 95974.7  # kg UO2 from AP1000 DCD Chapter 4, Table 4.1-1
+cp_f = 313  # J/kg-K specific heat of fuel from Table 4.3 of Oak Ridge National Labs paper: https://info.ornl.gov/sites/publications/Files/Pub57523.pdf
+m_c = 12649.23  # kg coolant in core (calculated on 11/9/2025) m_c = (W*H)/v_c
+cp_JpkgK = 5541.398  # J/kg-K, specific heat capcity of coolant was 5545 from enghandbook.  NEW calculated value from
+W_kgps = 14275.56  # kg/s, effective mass flow rate of coolant in core (113.3 x 10^6 lbm/hr) from AP1000 DCD Chapter 5, Table 5.1-3
+f = 0.974  # % heat generated in fuel from AP1000 DCD Chapter 4, Table 4.1-1
+tau_f = (m_f * cp_f) / (UA)  # fuel-to-coolant heat transfer time constant
 tau_c = (m_c * cp_JpkgK) / (UA)  # time constant  for fuel-to-coolant heat transfer
-tau_r = m_c / W_kgps # residence time of coolant in the core
-tau_rxi = 1.683   # s  Tcold_in -> T_core_inlet (downcomer + lower plenum lag)  (average of my calculation and Vajpayee numbers)
-tau_rxu = 2.064  # s  Tc2 -> T_hot_leg (upper plenum hot-leg lag)  (average of my calculation and Vajpayee numbers)
+tau_r = m_c / W_kgps  # residence time of coolant in the core
+tau_rxi = 1.68  # s  Tcold_in -> T_core_inlet (downcomer + lower plenum lag)  (average of my calculation and Vajpayee numbers)
+tau_rxu = 2.06  # s  Tc2 -> T_hot_leg (upper plenum hot-leg lag)  (average of my calculation and Vajpayee numbers)
 f_bypass = 0.059  # Upper plenum bypass flow fraction (5.9%) - cooler flow bypasses core and mixes in upper plenum
-H_f = f * P_RATED_W / (m_f * cp_f) # K/s per pu
-H_c = (1.0 - f) * P_RATED_W / (m_c * cp_JpkgK) # K/s per pu
-RHO_STEP_PCM = 0.0 # for adding or subtracting cents of reactivity
+H_f = f * P_RATED_W / (m_f * cp_f)  # K/s per pu
+H_c = (1.0 - f) * P_RATED_W / (m_c * cp_JpkgK)  # K/s per pu
+RHO_STEP_PCM = 0.0  # for adding or subtracting cents of reactivity
 _REACTIVITY_DEBUG_PRINTED = False
+
 
 # Mann two-coolant-lump and one fuel lump core model
 # Inputs: Tf, Tc1, Tc2, Tin (all in Kelvin);  P_pu (per-unit reactor power)
@@ -165,15 +166,14 @@ class FBParams:
     # feedback coefficients in pcm/°F
     # moderator coefficient chosen to match Kerlin value from H.B. Robinson paper
     alpha_D_input: float = -1.4  # pcm/°F, Doppler
-    alpha_M1_input: float = -14  # pcm/°F Moderator coefficient for inlet/avg coolant (70% weight of overall moderator temperature coefficient of -2e-4 delta_k/k/°F)
-    alpha_M2_input: float = -6  # pcm/°F Moderator coefficient foroutlet coolant (smaller effect ~ 30% weight of overall moderator temperature coefficient of -2e-4 delta_k/k/°F)
+    alpha_M_input: float = -20  # pcm/°F Moderator coefficient for inlet/avg coolant (70% weight of overall moderator temperature coefficient of -2e-4 delta_k/k/°F)
     coeff_units: str = "F"
 
     # Reference temps (Kelvin) at HFP with bypass flow
     T_f0: float = 1111.680  # Fuel temperature at steady state with bypass flow
-    T_m0: float = 574.039 # Kelvin, average coolant temperature (measured with bypass flow effect)
-    Tc10: float = 575.305 # Kelvin, first coolant lump temperature at steady state
-    Tc20: float = 596.793 # Kelvin, second coolant lump temperature at steady state
+    T_m0: float = 575.305  # Kelvin, average coolant temperature (measured with bypass flow effect)
+    Tc10: float = 575.305  # Kelvin, first coolant lump temperature at steady state
+    Tc20: float = 596.793  # Kelvin, second coolant lump temperature at steady state
 
 
 # Sliding T_avg program ----------------
@@ -261,8 +261,7 @@ class ReactorSimulator:
 
         # Manual rod command (rod speed in fraction of stroke per second).
         # Used only in manual mode.
-        self.control_mode = "auto"  # or "manual", but be explicit
-        self.manual_u = 0.0  # default rod speed command in manual mode
+        self.manual_u = 0.0
 
         # Calculate equilibrium temperatures if not provided
         if Tc_init is None:
@@ -273,17 +272,39 @@ class ReactorSimulator:
         # Initialize state variables
         # There are 5 temperature states instead of 3
         # Tf, Tc1, Tc2 (core thermal model) + T_core_inlet, T_hot_leg (transport delays)
-        self.Tf = self.fb.T_f0
-        self.Tc1 = self.fb.Tc10
-        self.Tc2 = self.fb.Tc20
+        #self.Tf = self.fb.T_f0
+        #self.Tc1 = self.fb.Tc10
+        #self.Tc2 = self.fb.Tc20
+
+        # Compute exact thermal steady-state for Holbert model at Tin=Tc_init and initial power
+        P0 = 1.0  # or use P_turb_init if you want to start at that per-unit power
+
+        A = H_c * P0 + (tau_f * H_f * P0) / tau_c
+        Tc1_eq = Tc_init + (tau_r / 2.0) * A
+        Tc2_eq = 2.0 * Tc1_eq - Tc_init
+        Tf_eq = Tc1_eq + tau_f * H_f * P0
+
+        # Set BOTH the state temps AND the feedback references to the exact equilibrium
+        self.Tf = Tf_eq
+        self.Tc1 = Tc1_eq
+        self.Tc2 = Tc2_eq
+
+        self.fb.T_f0 = Tf_eq
+        self.fb.Tc10 = Tc1_eq
+        self.fb.Tc20 = Tc2_eq
+        self.fb.T_m0 = Tc1_eq  # since you use Tc1 for moderator feedback
+
         self.T_core_inlet = Tc_init  # (553.82 K)
         f_bypass = 0.059
-        T_mix0 = (1 - f_bypass) * self.fb.Tc20 + f_bypass * Tc_init
+        #T_mix0 = (1 - f_bypass) * self.fb.Tc20 + f_bypass * Tc_init
+        T_mix0 = (1 - f_bypass) * Tc2_eq + f_bypass * Tc_init
         self.T_hot_leg = T_mix0
 
         # Point kinetics state
-        self.n = 1.0  # normalized neutron population
-        self.C = self.pk.beta_i / (self.pk.Lambda * self.pk.lambda_i)  # precursor concentrations
+        #self.P_pu = 1.0  # normalized power
+        #self.C = self.pk.beta_i / (self.pk.Lambda * self.pk.lambda_i)  # precursor concentrations
+        self.P_pu = P0
+        self.C = (self.pk.beta_i / (self.pk.Lambda * self.pk.lambda_i)) * self.P_pu
 
         # Control state
         self.x = X_OP  # rod position
@@ -297,7 +318,9 @@ class ReactorSimulator:
 
         # For diagnostics
         self.t = 0.0
-        self.P_pu = 1.0
+
+        self.rho_total = 0.0  # Δk/k, exposed for logging
+        self.rho_total_pcm = 0.0
 
     def _compute_derivs(self, t, y, Tc_in_external, P_turb):
         """
@@ -305,7 +328,7 @@ class ReactorSimulator:
 
         State vector y:
         [0:6]   : C_i (precursor concentrations)
-        [6]     : n (normalized neutron population)
+        [6]     : P_pu (normalized power)
         [7]     : Tf (fuel temperature)
         [8]     : Tc1 (first coolant lump)
         [9]     : Tc2 (second coolant lump)
@@ -317,7 +340,7 @@ class ReactorSimulator:
         """
         # Extract state
         C = y[0:6]
-        n = y[6]
+        P_pu = y[6]
         Tf = y[7]
         Tc1 = y[8]
         Tc2 = y[9]
@@ -327,35 +350,30 @@ class ReactorSimulator:
         z_integral = y[13]
         z_pow_bias = y[14]
 
-        # Power
-        P_pu = n
-
         # Calculate reactivity feedbacks using core coolant temperatures
         dT_f = Tf - self.fb.T_f0
-        dT_m1 = Tc1 - self.fb.Tc10  # First coolant lump feedback
-        dT_m2 = Tc2 - self.fb.Tc20  # Second coolant lump feedback
+        dT_m = Tc1 - self.fb.Tc10  # First coolant lump feedback
 
         # Convert to Fahrenheit for feedback coefficients
         dT_f_F = dT_f * 9.0 / 5.0
-        dT_m1_F = dT_m1 * 9.0 / 5.0
-        dT_m2_F = dT_m2 * 9.0 / 5.0
+        dT_m_F = dT_m * 9.0 / 5.0
 
         # Reactivity components
         rho_fb_pcm = (self.fb.alpha_D_input * dT_f_F +
-                      self.fb.alpha_M1_input * dT_m1_F +
-                      self.fb.alpha_M2_input * dT_m2_F)
+                      self.fb.alpha_M_input * dT_m_F)
 
         rho_rod_pcm = self.rod_worth.rho_pcm_rel(x, X_OP)
         rho_ext_pcm = RHO_STEP_PCM
         rho_tot_pcm = rho_fb_pcm + rho_rod_pcm + rho_ext_pcm
         rho_tot = rho_tot_pcm * PCM_TO_DK
 
-        self.rho_total = rho_tot  # Δk/k
+        self.rho_total_pcm = float(rho_tot_pcm)
+        self.rho_total = float(rho_tot)
 
         # Point kinetics
         rho_minus_beta = rho_tot - self.pk.beta
-        dn_dt = (rho_minus_beta / self.pk.Lambda) * n + np.sum(self.pk.lambda_i * C)
-        dC_dt = (self.pk.beta_i / self.pk.Lambda) * n - self.pk.lambda_i * C
+        dP_pu_dt = (rho_minus_beta / self.pk.Lambda) * P_pu + np.sum(self.pk.lambda_i * C)
+        dC_dt = (self.pk.beta_i / self.pk.Lambda) * P_pu - self.pk.lambda_i * C
 
         # Thermal model using DELAYED core inlet temperature
         dTf, dTc1, dTc2 = thermal_derivs(Tf, Tc1, Tc2, T_core_inlet, P_pu)
@@ -463,38 +481,12 @@ class ReactorSimulator:
                             self.ctrl.LEAK_OUTER * z_pow_bias
                     )
 
-
         else:
-
-            # Manual Rod Mode ignores controllers and uses externally commanded rod speed,
-
-            # but within physical rod limits
-
-            if self.manual_u is None:
-
-                # No manual command yet → hold rods
-
-                u_manual = 0.0
-
-            else:
-
-                u_manual = float(np.clip(
-
-                    self.manual_u,
-
-                    -self.ctrl.x_rate_max,
-
-                    self.ctrl.x_rate_max
-
-                ))
+            # Manual Rod Mode ignores controllers and uses externally commanded rod speed, but within physical rod limits
+            u_cmd = 0.0 if self.manual_u is None else float(self.manual_u)
+            u_manual = np.clip(u_cmd, -self.ctrl.x_rate_max, self.ctrl.x_rate_max)
 
             dx_dt = u_manual
-
-            # Let integrals wind down toward zero while in manual
-
-            dz_integral_dt = -self.ctrl.LEAK * z_integral
-
-            dz_pow_bias_dt = 0.0  # -self.ctrl.LEAK_OUTER * z_pow_bias
 
             # Let integrals wind down toward zero while in manual
             dz_integral_dt = -self.ctrl.LEAK * z_integral
@@ -503,7 +495,7 @@ class ReactorSimulator:
         # Assemble derivative vector
         dydt = np.zeros(15)
         dydt[0:6] = dC_dt
-        dydt[6] = dn_dt
+        dydt[6] = dP_pu_dt
         dydt[7] = dTf
         dydt[8] = dTc1
         dydt[9] = dTc2
@@ -544,7 +536,7 @@ class ReactorSimulator:
         # Assemble state vector
         y0 = np.zeros(15)
         y0[0:6] = self.C
-        y0[6] = self.n
+        y0[6] = self.P_pu
         y0[7] = self.Tf
         y0[8] = self.Tc1
         y0[9] = self.Tc2
@@ -553,6 +545,26 @@ class ReactorSimulator:
         y0[12] = self.x
         y0[13] = self.z_integral
         y0[14] = self.z_pow_bias
+
+        # --- DEBUG: print initial conditions used by solver (once) ---
+        if not hasattr(self, "_dbg_init_printed"):
+            self._dbg_init_printed = True
+
+            print("\n[RX init snapshot (values used to build y0)]")
+            print(f"  t={self.t:.3f}  dt={dt:.3f}  Tc_in(external)={Tc_in:.3f}  P_turb={P_turb:.6f}")
+            print(f"  Tf={self.Tf:.3f}  Tc1={self.Tc1:.3f}  Tc2={self.Tc2:.3f}")
+            print(f"  fb.T_f0={self.fb.T_f0:.3f}  fb.Tc10={self.fb.Tc10:.3f}  fb.Tc20={self.fb.Tc20:.3f}")
+            print(f"  Tf-T_f0={self.Tf-self.fb.T_f0:+.3f}  Tc1-Tc10={self.Tc1-self.fb.Tc10:+.3f}  Tc2-Tc20={self.Tc2-self.fb.Tc20:+.3f}")
+
+            # Point kinetics state
+            Ci_str = ", ".join(f"{c:.3e}" for c in np.array(self.C).ravel())
+            print(f"  P_pu={self.P_pu:.6f}")
+            print(f"  C_i=[{Ci_str}]")
+
+            # Optional: show initial thermal derivatives to confirm equilibrium (should be ~0)
+            dTf0, dTc10, dTc20 = thermal_derivs(self.Tf, self.Tc1, self.Tc2, self.T_core_inlet, self.P_pu)
+            print(f"  dTf/dt={dTf0:+.6e}  dTc1/dt={dTc10:+.6e}  dTc2/dt={dTc20:+.6e}\n")
+
 
         # Integrate
         t_span = [self.t, self.t + dt]
@@ -568,7 +580,7 @@ class ReactorSimulator:
         # Extract final state
         y_final = sol.y[:, -1]
         self.C = y_final[0:6]
-        self.n = y_final[6]
+        self.P_pu = y_final[6]
         self.Tf = y_final[7]
         self.Tc1 = y_final[8]
         self.Tc2 = y_final[9]
@@ -582,7 +594,6 @@ class ReactorSimulator:
         self.t += dt
 
         # Calculate outputs
-        self.P_pu = self.n
         P_out_MWt = self.P_pu * P_RATED_MWT
         Th_out = self.T_hot_leg  # Return DELAYED hot leg temperature
 
@@ -598,7 +609,6 @@ class ReactorSimulator:
             't': self.t,
             'P_MWt': self.P_pu * P_RATED_MWT,
             'P_pu': self.P_pu,
-            'n': self.n,
             'x_rods': self.x,
             'T_f': self.Tf,
             'Tf': self.Tf,
@@ -771,7 +781,7 @@ def run_load_cut_simulation():  # shouldn't be run by main during plant-coupled 
 
     # Use the same equilibrium cold-leg temperature as the Rev10 core model
     # 537.2°F = 553.82 K
-    Tc_inlet = 553.82  # K
+    Tc_inlet = 553.817  # K
     print(f"Using equilibrium cold-leg temperature: {Tc_inlet:.2f} K")
 
     # For information: core and loop temperature rise at HFP
@@ -876,7 +886,7 @@ def run_load_cut_simulation():  # shouldn't be run by main during plant-coupled 
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(4, 2, figsize=(14, 12))
-    fig.suptitle(f'Rev 14: {DELTA_MWE} MWe reduction at t={STEP_T_S}s',
+    fig.suptitle(f'Rev 15: {DELTA_MWE} MWe reduction at t={STEP_T_S}s',
                  fontsize=14, fontweight='bold')
 
     # Power
@@ -917,7 +927,7 @@ def run_load_cut_simulation():  # shouldn't be run by main during plant-coupled 
     axes[2, 0].plot(results['t'], results['T_hot_leg'], label='Hot Leg (delayed)', linewidth=2, linestyle='--')
     axes[2, 0].set_ylabel('Temperature (K)')
     axes[2, 0].set_xlabel('Time (s)')
-    axes[2, 0].set_title('Hot Leg Transport Delay (tau_rxu = 2.064s)')
+    axes[2, 0].set_title('Hot Leg Transport Delay (tau_rxu = 2.06s)')
     axes[2, 0].grid(True, alpha=0.3)
     axes[2, 0].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
     axes[2, 0].legend()
@@ -926,7 +936,7 @@ def run_load_cut_simulation():  # shouldn't be run by main during plant-coupled 
     axes[2, 1].plot(results['t'], results['T_core_inlet'], label='Core Inlet (delayed)')
     axes[2, 1].set_ylabel('Temperature (K)')
     axes[2, 1].set_xlabel('Time (s)')
-    axes[2, 1].set_title('Core Inlet Transport Delay (tau_rxi = 1.683s)')
+    axes[2, 1].set_title('Core Inlet Transport Delay (tau_rxi = 1.68s)')
     axes[2, 1].grid(True, alpha=0.3)
     axes[2, 1].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
     axes[2, 1].legend()
@@ -958,7 +968,7 @@ def run_load_cut_simulation():  # shouldn't be run by main during plant-coupled 
 
 
 if __name__ == "__main__":
-    RUN_TEST_1 = True  # Load cut simulation
+    RUN_TEST_1 = False  # Load cut simulation
     RUN_TEST_2 = False  # Time-stepping test
 
     if RUN_TEST_1:

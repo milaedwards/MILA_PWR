@@ -23,6 +23,7 @@ class Config:
     # ---------------------------------------------------------
     dt: float = 0.1      # [s]
     t_final: float = 300 # [s]
+    startup_warm_time_s: float = 0.0  # [s] pre-sim warmup to settle loops
 
     # ---------------------------------------------------------
     # Primary loop nominal conditions
@@ -37,8 +38,17 @@ class Config:
     # Secondary loop nominal conditions
     # ---------------------------------------------------------
     P_sec_nom_Pa: float = 5.764e6            # [Pa]
-    T_fw_K: float = 226.7 + 273.15           # [K]
+    T_fw_K: float = 228.35 + 273.15           # [K]
     m_dot_steam_nom_kg_s: float = 1886.188   # [kg/s]
+
+    P_sec_set_MPa = 5.764
+    P_sec_set_Pa = P_sec_set_MPa * 1e6
+    Kp_P_mdot_per_MPa = 150.0  # kg/s per MPa (start here)
+    Ki_P_mdot_per_MPa_s = 5.0  # kg/s per (MPa*s)
+    P_int_limit = 5.0  # MPa*s (clamps integral)
+    m_dot_cmd_min = 0.2 * m_dot_steam_nom_kg_s
+    m_dot_cmd_max = 1.2 * m_dot_steam_nom_kg_s
+    m_dot_cmd_rate_limit = 30.0  # kg/s per second (optional)
 
     # ---------------------------------------------------------
     # Rated powers and nominal control state
@@ -46,6 +56,10 @@ class Config:
     P_core_nom_MWt: float = 3400.0           # [MWt]
     P_e_nom_MWe: float = 1122.0              # [MWe]
     rod_insert_nom: float = 0.57             # [-]
+    load_demand_max_pu: float = 1.2          # [-] governor clamp for load demand
+    steam_flow_pressure_exp: float = 0.5     # [-] how strongly dome pressure limits SG flow
+    steamgen_settle_time_s: float = 30.0     # [s] SG internal warmup duration
+    turbine_power_scale: float | None = None # [-] optional manual turbine scaling
 
     # ---------------------------------------------------------
     # REACTOR CORE (lumped fuel + coolant + kinetics)
@@ -125,7 +139,9 @@ class Config:
     cp_metal_J_kgK: float = 524.0         # [J/kg-K]
 
     A_ht_m2: float = 10936.06             # [m^2] heat transfer area
-    U_W_m2K: float = 7660.0               # [W/m^2-K] primary-side HTC
+    #U_W_m2K: float = 7660.0              # [W/m^2-K] primary-side HTC
+    U_W_m2K: float = 16000.0 * 1.19
+
     h_s_W_m2K: float = 38794.0            # [W/m^2-K] secondary HTC (geometric)
 
     # Primary tube geometry
@@ -150,7 +166,7 @@ class Config:
     #   q_ms_eq ≈ m_dot * Δh_fg ≈ 3.417 GW
     #
     # All derived G_ms_W_K and taus below use this calibrated value.
-    G_ms_calib_W_K: float = 1.919e8       # [W/K] calibrated knob
+    G_ms_calib_W_K: float = 3.24e8 * 1.025       # [W/K] calibrated knob
 
     # ---------------------------------------------------------
     # AUTO-COMPUTED FIELDS
@@ -185,6 +201,8 @@ class Config:
     tau_pm_s: float = field(init=False)
     tau_mp_s: float = field(init=False)
     tau_ms_s: float = field(init=False)
+    tau_ms_metal_s: float = field(init=False)
+    tau_mp_metal_s: float = field(init=False)
 
     tau_hot_s: float = field(init=False)
     tau_sgi_s: float = field(init=False)
@@ -236,7 +254,9 @@ class Config:
             cp_fw = 4200.0
             h_s = 1.803e6
 
-        delta_fw = h_s - h_fw
+
+        #delta_fw = h_s - h_fw
+        delta_fw = 1.803e6
         delta_eff = h_s - cp_fw * self.T_fw_K
 
         object.__setattr__(self, "h_fw_J_kg", h_fw)
@@ -283,6 +303,8 @@ class Config:
         object.__setattr__(self, "tau_pm_s", C_p / G_pm)
         object.__setattr__(self, "tau_mp_s", C_m * (1.0 / G_pm + 1.0 / G_ms))
         object.__setattr__(self, "tau_ms_s", C_s / G_ms)
+        object.__setattr__(self, "tau_ms_metal_s", C_m / max(G_ms, 1e-12))
+        object.__setattr__(self, "tau_mp_metal_s", C_m / max(G_pm, 1e-12))
 
         # Hydraulic taus
         def tau_h(V):

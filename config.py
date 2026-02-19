@@ -1,316 +1,300 @@
 # config.py
-# Clean and modern AP1000 thermal-hydraulic configuration
+# Clean and modern AP1000 thermal-hydraulic configuration (NO CoolProp)
+#
+# Drop-in replacement:
+# - Removes CoolProp dependency entirely
+# - Removes duplicate/conflicting dataclass fields
+# - Moves all derived quantities into __post_init__
+# - Adds explicit unit comments everywhere important
 
 from dataclasses import dataclass, field
-import numpy as np
-
-try:
-    import CoolProp.CoolProp as CP
-except ImportError:
-    CP = None
 
 
 @dataclass
 class Config:
     """
     Minimal, clean, and complete configuration for the AP1000
-    reactor + primary loop + Delta-125 SG subsystem.
-    Only includes values actually required in the physics models.
+    reactor + Delta-125 steam generator + simple BOP.
+
+    Notes:
+      - All values use SI units unless explicitly labeled otherwise.
+      - No CoolProp: all properties are fixed constants (explicit, auditable).
+      - Derived quantities are computed in __post_init__.
     """
 
     # ---------------------------------------------------------
-    # Simulation
+    # GLOBAL NUMERICS / SIMULATION
     # ---------------------------------------------------------
-    dt: float = 0.1      # [s]
-    t_final: float = 300 # [s]
-    startup_warm_time_s: float = 0.0  # [s] pre-sim warmup to settle loops
-
-    # ---------------------------------------------------------
-    # Primary loop nominal conditions
-    # ---------------------------------------------------------
-    P_pri_nom_Pa: float = 15.513e6           # [Pa]
-    m_dot_primary_nom_kg_s: float = 15170.145  # [kg/s]
-    m_dot_core_kg_s = 14275.56
-    T_hot_nom_K: float = 594.261             # [K]
-    T_cold_nom_K: float = 553.817            # [K]
+    dt: float = 0.1          # [s] integration time step
+    t_final: float = 3600.0   # [s] default run length
 
     # ---------------------------------------------------------
-    # Secondary loop nominal conditions
+    # PRIMARY SIDE NOMINAL CONDITIONS
     # ---------------------------------------------------------
-    P_sec_nom_Pa: float = 5.764e6            # [Pa]
-    T_fw_K: float = 228.35 + 273.15           # [K]
-    m_dot_steam_nom_kg_s: float = 1886.188   # [kg/s]
+    P_pri_nom_Pa: float = 15.513e6          # [Pa] nominal RCS pressure
+    T_hot_nom_K: float = 586.76            # ************************************************CHANGED*************************************************************
+    #T_hot_nom_K: float = 584.68
+    T_cold_nom_K: float = 545.89           # ************************************************CHANGED*************************************************************
+    #T_cold_nom_K: float = 543.68
+    m_dot_primary_nom_kg_s: float = 15170.145  # [kg/s] total RCS flow (all loops)
+    m_dot_core_kg_s: float = 14275.6       # [kg/s] core flow (DCD)
 
-    P_sec_set_MPa = 5.764
-    P_sec_set_Pa = P_sec_set_MPa * 1e6
-    Kp_P_mdot_per_MPa = 150.0  # kg/s per MPa (start here)
-    Ki_P_mdot_per_MPa_s = 5.0  # kg/s per (MPa*s)
-    P_int_limit = 5.0  # MPa*s (clamps integral)
-    m_dot_cmd_min = 0.2 * m_dot_steam_nom_kg_s
-    m_dot_cmd_max = 1.2 * m_dot_steam_nom_kg_s
-    m_dot_cmd_rate_limit = 30.0  # kg/s per second (optional)
+    # Primary coolant properties (fixed, no EOS)
+    rho_primary_nom_kg_m3: float = 720.0    # [kg/m^3] nominal primary coolant density
 
     # ---------------------------------------------------------
-    # Rated powers and nominal control state
+    # SECONDARY SIDE NOMINAL CONDITIONS
     # ---------------------------------------------------------
-    P_core_nom_MWt: float = 3400.0           # [MWt]
-    P_e_nom_MWe: float = 1122.0              # [MWe]
-    rod_insert_nom: float = 0.57             # [-]
-    load_demand_max_pu: float = 1.2          # [-] governor clamp for load demand
-    steam_flow_pressure_exp: float = 0.5     # [-] how strongly dome pressure limits SG flow
-    steamgen_settle_time_s: float = 30.0     # [s] SG internal warmup duration
-    turbine_power_scale: float | None = None # [-] optional manual turbine scaling
+    P_sec_nom_Pa: float = 5.764e6           # [Pa] nominal SG secondary pressure
+    T_sec_nom_K: float = 546.129            # [K] nominal steam saturation temperature (at P_sec_nom)
+    T_metal_nom_K: float = 574.039          # [K] nominal SG metal temperature
+    T_fw_nom_K: float = 226.7 + 273.15      # [K] nominal feedwater temperature
+
+    # Nominal steam flow (authoritative in "no property model" mode)
+    m_dot_steam_nom_override_kg_s: float = 1774.9198  # [kg/s] nominal steam mass flow
+
+    # Feedwater specific heat (used in any simplified FW energy terms)
+    cp_fw_J_kgK: float = 4200.0             # [J/kg-K] feedwater cp (lumped)
 
     # ---------------------------------------------------------
-    # REACTOR CORE (lumped fuel + coolant + kinetics)
+    # CORE / PLANT NOMINAL POWERS
     # ---------------------------------------------------------
-    # Core thermal masses
-    m_fuel_core_kg: float = 95974.7  # UO2 mass
-    cp_fuel_core_J_kgK: float = 313.0  # fuel cp
-    cp_coolant_core_J_kgK: float = 5541.398
+    P_core_nom_MWt: float = 3417.8          # [MWt] rated core thermal power
+    P_e_nom_MWe: float = 1127.87            # [MWe] net electric power
+    rod_insert_nom: float = 0.57            # [-] nominal rod insertion
 
-    # Core reference temperatures
-    T_f0: float = 1111.680  # Fuel temperature at steady state with bypass flow
-    T_m0: float = 575.305  # Kelvin, average coolant temperature (measured with bypass flow effect)
-    Tc10: float = 575.305  # Kelvin, first coolant lump temperature at steady state
-    Tc20: float = 596.793  # Kelvin, second coolant lump temperature at steady state
+    # ---------------------------------------------------------
+    # MATERIAL PROPERTIES (APPROXIMATE, FIXED)
+    # ---------------------------------------------------------
+    cp_fuel_core_J_kgK: float = 313.0       # [J/kg-K] effective fuel cp
+    cp_coolant_core_J_kgK: float = 5511.4 # [J/kg-K] effective coolant cp
 
-    m_coolant_core_kg: float = 12649.23  # kg of coolant in core
+    # ---------------------------------------------------------
+    # CORE GEOMETRY AND MASSES
+    # ---------------------------------------------------------
+    V_core_coolant_m3: float = 18.0         # [m^3] coolant volume in core (effective)
+    m_fuel_core_kg: float = 95974.7         # [kg] effective fuel mass (lumped)
+    m_coolant_core_kg: float = 12649.23     # [kg] effective core coolant mass (fixed)
 
-    # Fuel-to-coolant heat transfer (lumped)
-    U_fc_W_m2K: float = 1172.078  # fuel→coolant HTC
-    A_fc_m2: float = 5267.6  # active HT area
+    # Core reference temperatures for legacy Holbert two-lump model
+    T_f0: float = 1104.0                  # [K] steady-state fuel temperature
+    T_m0: float = 567.6                   # [K] average coolant temperature
+    Tc10: float = 567.6                   # [K] coolant lump 1 temperature
+    Tc20: float = 589.3                   # [K] coolant lump 2 temperature
 
-    # Reactor power controller gains
-    Kp_rc: float = 0.00030 # proportional gain
-    Ki_rc: float = 0.000015 # integral gain
-    Kpow_i_rc: float = 0.30 # power gain
-    Kff_rc: float = 0.10 # feedforward gain
-    K_AW_rc: float = 2.0 # Anti-windup back-calculation gain
-    LEAK_rc: float = 0.10 # Inner loop integral leak [1/s] - high for stability
-    LEAK_OUTER_rc: float = 0.0 # Outer loop integral leak [1/s] - high for stability
-    DB_rc_K: float = 0.3 # Temperature deadband [K] - large to prevent hunting
-    P_DEADBAND_rc: float = 0.005 # Power deadband [pu] (4%)
-    U_MAX_rc: float = 0.0045 # Maximum controller output [1/s] based on physical limits
-    Z_BIAS_MAX_rc: float = 8.0 # Maximum power bias [K]
+    # ---------------------------------------------------------
+    # CORE HEAT-TRANSFER AREAS AND COEFFICIENTS
+    # ---------------------------------------------------------
+    A_fc_m2: float = 5267.6                 # [m^2] fuel-to-coolant area (lumped)
+    U_fc_W_m2K: float = 1178.214            # [W/m^2-K] fuel-to-coolant U
 
-    # Power split / residence time
-    f_fuel_fraction: float = 0.974  # fraction of power to fuel
-    bypass_fraction: float = 0.059  # 5.9% bypass, if you want it here
+    # ---------------------------------------------------------
+    # PRIMARY LOOP VOLUMES (used only for hydraulic residence taus)
+    # ---------------------------------------------------------
+    V_hot_m3: float = 7.5                   # [m^3] hot leg effective volume
+    V_sg_plenums_m3: float = 16.65          # [m^3] SG primary plenums total (inlet+outlet)
+    V_sgi_m3: float = 8.325                 # [m^3] SG inlet plenum volume
+    V_sgu_m3: float = 8.325                 # [m^3] SG outlet plenum volume
+    V_cold_m3: float = 11.5                 # [m^3] cold leg effective volume
 
-    tau_rxi_s: float = 1.68  # vessel inlet → core inlet
-    tau_rxu_s: float = 2.06  # core exit → vessel exit
-    tau_f = (m_fuel_core_kg * cp_fuel_core_J_kgK) / (U_fc_W_m2K * A_fc_m2)  # fuel-to-coolant heat transfer time constant
-    tau_c = (m_coolant_core_kg * cp_coolant_core_J_kgK) / (U_fc_W_m2K * A_fc_m2)  # time constant  for fuel-to-coolant heat transfer
-    tau_r = m_coolant_core_kg / m_dot_core_kg_s  # residence time of coolant in the core
+    # ---------------------------------------------------------
+    # SG GEOMETRY (FROM DCD TABLE – SG ONLY)
+    # ---------------------------------------------------------
+    V_sg_tubes_m3: float = 42.16            # [m^3] primary water in SG tubes
+    V_sec_water_m3: float = 103.24          # [m^3] secondary water volume
+    V_steam_m3: float = 147.87              # [m^3] steam/dome volume
+    m_sec_water_kg: float = 79728.0         # [kg] secondary water mass (effective)
+
+    # ---------------------------------------------------------
+    # SG CALIBRATED METAL→STEAM CONDUCTANCE + SG PI GAINS
+    # ---------------------------------------------------------
+    G_ms_calib_W_K: float = 1.218199e8      # [W/K] calibrated conductance knob
+    G_ms1_frac: float = 0.5                 # [-] fraction of G_ms applied to metal node 1
+    G_ms2_frac: float = 0.5                 # [-] fraction of G_ms applied to metal node 2
+
+    Kp_flow_per_Pa: float = 1.2e-4          # [kg/s per Pa] steam-flow trim proportional gain
+    Ki_flow_per_Pa_s: float = 4.0e-5        # [kg/s per (Pa*s)] steam-flow trim integral gain
+
+    # ---------------------------------------------------------
+    # STEAM GENERATOR SECONDARY PRESSURE DYNAMICS (Level 3)
+    # ---------------------------------------------------------
+    sg_KpP_Pa_per_kg_s: float = 3000.0   # [Pa/(kg/s)] pressure sensitivity to steam mismatch
+    sg_tauP_s: float = 5.0              # [s] pressure lag time constant
+    sg_dPmax_Pa: float = 0.5e6          # [Pa] clamp around nominal (+/-)
+    sg_Pmin_Pa: float = 1.0e5           # [Pa] absolute min pressure clamp
+    sg_Pmax_Pa: float = 25.0e6          # [Pa] absolute max pressure clamp
+    sg_tau_sep_s: float = 8.0   # [s] steam separator / dome lag (delivered steam inertia)
+    sg_tau_valve_s: float = 2.0   # [s] steam valve / demand lag time constant
+    
+    # ---------------------------------------------------------
+    # REACTOR CONTROL CONSTANTS
+    # ---------------------------------------------------------
+    Kp_rc: float = 0.00030                  # [pcm/K] proportional gain
+    Ki_rc: float = 0.000015                 # [pcm/(K*s)] integral gain
+    Kpow_i_rc: float = 0.30                 # [-] inner power-loop integral gain
+    Kff_rc: float = 0.10                    # [-] feedforward gain
+    K_AW_rc: float = 2.0                    # [-] anti-windup gain
+    LEAK_rc: float = 0.10                   # [-] inner-loop integral leak
+    LEAK_OUTER_rc: float = 0.01              # [-] outer-loop integral leak
+
+    DB_rc_K: float = 0.3                    # [K] temperature deadband
+    P_DEADBAND_rc: float = 0.005            # [pu] power deadband
+    U_MAX_rc: float = 0.0045                # [1/s] max controller output
+    Z_BIAS_MAX_rc: float = 8.0              # [K] max power bias
+
+    f_fuel_fraction: float = 0.974          # [-] fraction of power to fuel
+    bypass_fraction: float = 0.059          # [-] bypass fraction
+
+    tau_rxi_s: float = 1.68                 # [s] vessel inlet → core inlet
+    tau_rxu_s: float = 2.06                 # [s] core exit → vessel exit
 
     # Rod mechanics
-    stroke_in: float = 166.755
-    vmax_rod_in_per_min: float = 45.0
+    stroke_in: float = 166.755              # [in] total stroke
+    vmax_rod_in_per_min: float = 45.0       # [in/min] max speed
 
     # Feedback coefficients (pcm/°F)
-    alpha_D_pcm_per_F: float = -1.4  # Doppler
-    alpha_M_pcm_per_F: float = -20.0  # moderator
+    alpha_D_pcm_per_F: float = -1.4         # [pcm/°F] Doppler
+    alpha_M_pcm_per_F: float = -20.0        # [pcm/°F] moderator
 
     # Point kinetics
-    Lambda_prompt_s: float = 19.8e-6
-    beta_eff: float = 0.0075
+    Lambda_prompt_s: float = 19.8e-6        # [s] prompt generation time
+    beta_eff: float = 0.0075                # [-] effective delayed neutron fraction
     beta_shape_tuple: tuple = (
         0.000221, 0.001467, 0.001313, 0.002647, 0.000771, 0.000281
-    )
-    lambda_i_tuple: tuple = (
-        0.0124, 0.0305, 0.111, 0.301, 1.14, 3.01
-    )
+    )                                       # [-] delayed group fractions
+    lambda_shape_tuple: tuple = (
+        0.0124, 0.0305, 0.1110, 0.3010, 1.1400, 3.0100
+    )                                       # [1/s] delayed group decay constants
 
-    # Rod worth
-    rho_rod_tot_pcm: float = 10490.0
-
-    # Nominal metal and secondary temperatures (computed later)
-    T_metal_nom_K: float = field(init=False)  # [K]
-    T_sec_nom_K: float = field(init=False)    # [K]
+    rho_rod_tot_pcm: float = 10490.0        # [pcm] total rod worth
 
     # ---------------------------------------------------------
-    # SG geometry / masses / areas
+    # AUTO-COMPUTED FIELDS (set in __post_init__)
     # ---------------------------------------------------------
-    V_steam_m3: float = 147.9             # [m^3] steam dome volume
-    m_sec_water_kg: float = 7.9722e4      # [kg] secondary inventory
+    # Aliases
+    cp_fuel_J_kgK: float = field(init=False)        # [J/kg-K]
+    cp_coolant_J_kgK: float = field(init=False)     # [J/kg-K]
 
-    m_tube_kg: float = 1.28e5             # [kg] SG metal mass
-    cp_metal_J_kgK: float = 524.0         # [J/kg-K]
+    # Nominal average temperature
+    Tavg_nom_K: float = field(init=False)           # [K]
 
-    A_ht_m2: float = 10936.06             # [m^2] heat transfer area
-    #U_W_m2K: float = 7660.0              # [W/m^2-K] primary-side HTC
-    U_W_m2K: float = 16000.0 * 1.19
+    # Steam / feed enthalpies (fixed constants, no CP)
+    h_steam_J_kg: float = field(init=False)         # [J/kg] nominal steam enthalpy
+    delta_h_steam_fw_J_kg: float = field(init=False)  # [J/kg] nominal enthalpy rise
+    m_dot_steam_nom_kg_s: float = field(init=False) # [kg/s] nominal steam flow actually used
 
-    h_s_W_m2K: float = 38794.0            # [W/m^2-K] secondary HTC (geometric)
-
-    # Primary tube geometry
-    D_i_m: float = 0.0154                 # [m]
-    L_tube_m: float = 20.63               # [m]
-    t_wall_m: float = 0.001016            # [m]
-    k_wall_W_mK: float = 13.5             # [W/m-K]
-
-    # Hydraulic volumes (primary-side segments)
-    V_hot_m3: float = 7.5
-    V_sgi_m3: float = 11.35
-    V_sgu_m3: float = 11.35
-    V_cold_m3: float = 11.5
-
-    # ---------------------------------------------------------
-    # SG CALIBRATED METAL→STEAM CONDUCTANCE KNOB
-    # ---------------------------------------------------------
-    # This is the value found by sg_calibration:
-    #   G_ms_calib_W_K ≈ 1.919e8 W/K
-    # which yields:
-    #   p_s_eq ≈ 5.764 MPa and
-    #   q_ms_eq ≈ m_dot * Δh_fg ≈ 3.417 GW
-    #
-    # All derived G_ms_W_K and taus below use this calibrated value.
-    G_ms_calib_W_K: float = 3.24e8 * 1.025       # [W/K] calibrated knob
-
-    # ---------------------------------------------------------
-    # AUTO-COMPUTED FIELDS
-    # ---------------------------------------------------------
-    rho_primary_kg_m3: float = field(init=False)
-    cp_primary_J_kgK: float = field(init=False)
-
-    # Steam / feedwater properties
-    T_sat_sec_K: float = field(init=False)
-    cp_fw_J_kgK: float = field(init=False)
-    h_fw_J_kg: float = field(init=False)
-    h_steam_J_kg: float = field(init=False)
-    delta_h_steam_fw_J_kg: float = field(init=False)
-    delta_h_eff_J_kg: float = field(init=False)
-    # compatibility aliases
-    h_steam_nom_J_kg: float = field(init=False)
-    delta_h_steam_fw_nom_J_kg: float = field(init=False)
-
-    # Primary tube volume
-    V_p_m3: float = field(init=False)
-
-    # Heat capacities
-    C_p_J_K: float = field(init=False)
-    C_m_J_K: float = field(init=False)
-    C_s_J_K: float = field(init=False)
-
-    # Conductances actually used by SGCore
-    G_pm_W_K: float = field(init=False)
-    G_ms_W_K: float = field(init=False)
+    # Conductances used by SGCore
+    G_ms_W_K: float = field(init=False)             # [W/K]
 
     # Time constants (taus)
-    tau_pm_s: float = field(init=False)
-    tau_mp_s: float = field(init=False)
-    tau_ms_s: float = field(init=False)
-    tau_ms_metal_s: float = field(init=False)
-    tau_mp_metal_s: float = field(init=False)
+    tau_pm_s: float = field(init=False)             # [s] primary → metal node 1
+    tau_mp_s: float = field(init=False)             # [s] metal node 1 → metal node 2 (effective)
+    tau_ms_s: float = field(init=False)             # [s] metal → secondary/steam (legacy tau)
 
-    tau_hot_s: float = field(init=False)
-    tau_sgi_s: float = field(init=False)
-    tau_sgu_s: float = field(init=False)
-    tau_cold_s: float = field(init=False)
+    tau_hot_s: float = field(init=False)            # [s] RX upper → hot leg residence/transport
+    tau_sgi_s: float = field(init=False)            # [s] hot leg → SG inlet residence/transport
+    tau_sgu_s: float = field(init=False)            # [s] SG outlet → cold leg residence/transport (tube node 2 → SG outlet)
+    tau_cold_s: float = field(init=False)           # [s] SG outlet → reactor inlet residence/transport
+
+    # Core thermal time constants (Holbert-style)
+    tau_f: float = field(init=False)                # [s] fuel thermal time constant
+    tau_c: float = field(init=False)                # [s] coolant thermal time constant
+    tau_r: float = field(init=False)                # [s] coolant residence time
+
+    # Legacy alias
+    lambda_i_tuple: tuple = field(init=False)       # [1/s] same as lambda_shape_tuple
 
     # ---------------------------------------------------------
-    #                 POST-INIT COMPUTATION
+    # POST-INIT COMPUTATION
     # ---------------------------------------------------------
     def __post_init__(self):
-        # ---------------------------------------------
-        # Primary coolant properties (ρ, cp)
-        # ---------------------------------------------
-        T_ref = 0.5 * (self.T_hot_nom_K + self.T_cold_nom_K)
+        # ---------------------------------------------------------
+        # Aliases / backward-compatible names
+        # ---------------------------------------------------------
+        # Steam generator + turbine code expects m_dot_steam_nom_kg_s
+        # but the config field is currently m_dot_steam_nom_override_kg_s.
+        self.m_dot_steam_nom_kg_s = float(self.m_dot_steam_nom_override_kg_s)
+        self.cp_fuel_J_kgK = float(self.cp_fuel_core_J_kgK)        # [J/kg-K]
+        self.cp_coolant_J_kgK = float(self.cp_coolant_core_J_kgK)  # [J/kg-K]
 
-        if CP:
-            rho = CP.PropsSI("D", "P", self.P_pri_nom_Pa, "T", T_ref, "Water")
-            cp_p = CP.PropsSI("C", "P", self.P_pri_nom_Pa, "T", T_ref, "Water")
-        else:
-            rho = 720.0
-            cp_p = 5500.0
+        # Nominal average temperature
+        self.Tavg_nom_K = 0.5 * (self.T_hot_nom_K + self.T_cold_nom_K)  # [K]
 
-        object.__setattr__(self, "rho_primary_kg_m3", rho)
-        object.__setattr__(self, "cp_primary_J_kgK", cp_p)
+        # Legacy alias
+        self.lambda_i_tuple = self.lambda_shape_tuple  # [1/s]
 
-        # Nominal metal temperature ~ average of hot and cold legs
-        T_metal_nom = 0.5 * (self.T_hot_nom_K + self.T_cold_nom_K)
-        object.__setattr__(self, "T_metal_nom_K", T_metal_nom)
+        # -----------------------------------------------------
+        # Steam / feed enthalpies (FIXED CONSTANTS, no CP)
+        # -----------------------------------------------------
+        # These values should be replaced with your validated table numbers.
+        self.h_steam_J_kg = 2.787e6   # [J/kg] nominal saturated vapor enthalpy (approx at 5.764 MPa)
+        h_fw = 9.75e5                 # [J/kg] nominal feedwater enthalpy (approx)
+        self.delta_h_steam_fw_J_kg = self.h_steam_J_kg - h_fw  # [J/kg]
 
-        # ---------------------------------------------
-        # Secondary saturation temperature
-        # ---------------------------------------------
-        if CP:
-            T_sat = CP.PropsSI("T", "P", self.P_sec_nom_Pa, "Q", 0, "Water")
-        else:
-            T_sat = 546.15  # [K] approximate
-        object.__setattr__(self, "T_sat_sec_K", T_sat)
-        object.__setattr__(self, "T_sec_nom_K", T_sat)
+        # Nominal steam flow used everywhere (authoritative override in no-property mode)
+        self.m_dot_steam_nom_kg_s = float(self.m_dot_steam_nom_override_kg_s)  # [kg/s]
 
-        # ---------------------------------------------
-        # Steam & feedwater enthalpies
-        # ---------------------------------------------
-        if CP:
-            h_s = CP.PropsSI("H", "P", self.P_sec_nom_Pa, "Q", 1, "Water")
-            h_fw = CP.PropsSI("H", "P", self.P_sec_nom_Pa, "T", self.T_fw_K, "Water")
-            cp_fw = CP.PropsSI("C", "P", self.P_sec_nom_Pa, "T", self.T_fw_K, "Water")
-        else:
-            h_fw = 0.0
-            cp_fw = 4200.0
-            h_s = 1.803e6
-
-
-        #delta_fw = h_s - h_fw
-        delta_fw = 1.803e6
-        delta_eff = h_s - cp_fw * self.T_fw_K
-
-        object.__setattr__(self, "h_fw_J_kg", h_fw)
-        object.__setattr__(self, "h_steam_J_kg", h_s)
-        object.__setattr__(self, "cp_fw_J_kgK", cp_fw)
-        object.__setattr__(self, "delta_h_steam_fw_J_kg", delta_fw)
-        object.__setattr__(self, "delta_h_eff_J_kg", delta_eff)
-        # compatibility aliases
-        object.__setattr__(self, "h_steam_nom_J_kg", h_s)
-        object.__setattr__(self, "delta_h_steam_fw_nom_J_kg", delta_fw)
-
-        # ---------------------------------------------
-        # Primary tube volume
-        # ---------------------------------------------
-        A_i = np.pi * (self.D_i_m / 2.0) ** 2
-        # scale tube count to match total heat transfer area
-        V_p = A_i * self.L_tube_m * (self.A_ht_m2 / (np.pi * self.D_i_m * self.L_tube_m))
-        object.__setattr__(self, "V_p_m3", V_p)
-
-        # Heat capacities
-        C_p = rho * V_p * cp_p
-        C_m = self.m_tube_kg * self.cp_metal_J_kgK
-        C_s = self.m_sec_water_kg * 4200.0  # [J/kg-K] water approx
-
-        object.__setattr__(self, "C_p_J_K", C_p)
-        object.__setattr__(self, "C_m_J_K", C_m)
-        object.__setattr__(self, "C_s_J_K", C_s)
-
-        # ---------------------------------------------
+        # -----------------------------------------------------
         # Conductances
-        # ---------------------------------------------
-        # Primary side: from geometry + U
-        G_pm = self.U_W_m2K * self.A_ht_m2
+        # -----------------------------------------------------
+        self.G_ms_W_K = float(self.G_ms_calib_W_K)  # [W/K]
 
-        # Metal → steam: USE CALIBRATED VALUE, NOT h_s*A
-        G_ms = self.G_ms_calib_W_K
+        # -----------------------------------------------------
+        # SG node masses / capacitances (lumped, DCD-based intent)
+        # -----------------------------------------------------
+        # Primary mass in SG tubes (fixed density assumption)
+        rho_sg_primary_kg_m3 = 726.0                           # [kg/m^3] fixed density used for SG tube primary water
+        m_p = self.V_sg_tubes_m3 * rho_sg_primary_kg_m3        # [kg]
+        m_m = 0.5 * self.m_fuel_core_kg                        # [kg] effective metal mass (lumped)
+        m_s = self.m_sec_water_kg                              # [kg] secondary water mass (effective)
 
-        object.__setattr__(self, "G_pm_W_K", G_pm)
-        object.__setattr__(self, "G_ms_W_K", G_ms)
+        # Primary→metal conductance roughly tied to core U·A
+        G_pm_W_K = 0.25 * self.U_fc_W_m2K * self.A_fc_m2        # [W/K]
+        G_ms_W_K = self.G_ms_W_K                                # [W/K]
 
-        # ---------------------------------------------
+        # Capacitances
+        C_p_J_K = m_p * self.cp_coolant_J_kgK                   # [J/K]
+        C_m_J_K = m_m * self.cp_fuel_J_kgK                      # [J/K]
+        C_s_J_K = m_s * 4200.0                                  # [J/K] secondary-side effective cp assumption
+
+        # -----------------------------------------------------
         # Time constants
-        # ---------------------------------------------
-        object.__setattr__(self, "tau_pm_s", C_p / G_pm)
-        object.__setattr__(self, "tau_mp_s", C_m * (1.0 / G_pm + 1.0 / G_ms))
-        object.__setattr__(self, "tau_ms_s", C_s / G_ms)
-        object.__setattr__(self, "tau_ms_metal_s", C_m / max(G_ms, 1e-12))
-        object.__setattr__(self, "tau_mp_metal_s", C_m / max(G_pm, 1e-12))
+        # -----------------------------------------------------
+        # Note: tau_mp_s uses your legacy formula: C_m * (1/G_pm + 1/G_ms)
+        self.tau_pm_s = C_p_J_K / G_pm_W_K if G_pm_W_K > 0.0 else 0.0  # [s]
+        if (G_pm_W_K > 0.0) and (G_ms_W_K > 0.0):
+            self.tau_mp_s = C_m_J_K * (1.0 / G_pm_W_K + 1.0 / G_ms_W_K)  # [s]
+        else:
+            self.tau_mp_s = 0.0
+        self.tau_ms_s = C_s_J_K / G_ms_W_K if G_ms_W_K > 0.0 else 0.0  # [s]
 
-        # Hydraulic taus
-        def tau_h(V):
-            return rho * V / self.m_dot_primary_nom_kg_s
+        # -----------------------------------------------------
+        # Hydraulic taus (residence/transport), fixed density
+        # -----------------------------------------------------
+        rho = float(self.rho_primary_nom_kg_m3)                 # [kg/m^3]
 
-        object.__setattr__(self, "tau_hot_s", tau_h(self.V_hot_m3))
-        object.__setattr__(self, "tau_sgi_s", tau_h(self.V_sgi_m3))
-        object.__setattr__(self, "tau_sgu_s", tau_h(self.V_sgu_m3))
-        object.__setattr__(self, "tau_cold_s", tau_h(self.V_cold_m3))
+        def tau_h(V_m3: float) -> float:
+            if self.m_dot_primary_nom_kg_s <= 0.0:
+                return 0.0
+            return (rho * V_m3) / self.m_dot_primary_nom_kg_s   # [s]
+
+        self.tau_hot_s = tau_h(self.V_hot_m3)   # [s]
+        self.tau_sgi_s = tau_h(self.V_sgi_m3)   # [s]
+        self.tau_sgu_s = tau_h(self.V_sgu_m3)   # [s]
+        self.tau_cold_s = tau_h(self.V_cold_m3) # [s]
+
+        # -----------------------------------------------------
+        # Core thermal time constants (Holbert-style), derived here
+        # -----------------------------------------------------
+        den_W_K = self.U_fc_W_m2K * self.A_fc_m2                # [W/K]
+        if den_W_K > 0.0:
+            self.tau_f = (self.m_fuel_core_kg * self.cp_fuel_J_kgK) / den_W_K     # [s]
+            self.tau_c = (self.m_coolant_core_kg * self.cp_coolant_J_kgK) / den_W_K  # [s]
+        else:
+            self.tau_f = 0.0
+            self.tau_c = 0.0
+
+        self.tau_r = (
+            self.m_coolant_core_kg / self.m_dot_primary_nom_kg_s
+            if self.m_dot_primary_nom_kg_s > 0.0 else 0.0
+        )  # [s]

@@ -1,28 +1,3 @@
-# AP1000 Reactor Simulator Rev8 FIXED v3 (BOC–HFP, no xenon, no boron)
-# - Full 6-group (Keepin U-235 dominant) point-kinetics scaled to beta-eff from AP1000 DCD Table 4.3-2 with Radau solver
-# - AP1000 rod worth from DCD Figure "All rods inserting less most reactive stuck rod"
-#   implemented as a normalized LUT + PCHIP spline, scaled to TOTAL WORTH = 10,490 pcm
-#   (Table 4.3-3 item 3b: "All assemblies but one (highest worth inserted)").
-# - BOC–HFP temperature feedbacks (fuel Doppler + moderator), xenon and boron ignored
-# - Mann's lumped model (2 coolant lumps and 1 fuel lump)
-# - Control Rod Drive Mechanics (CRDM) kinematics: 45 in/min over 166.755 in
-# - Sliding Tavg program: T_ref(P_turb) = T_m0 + S_Tavg * (P_turb − 1)
-# - NEW IN REV8: Transport delay ODEs for coolant transit times
-#   * tau_rxi = Vessel inlet → Core inlet (Using average between calculated values and Vajpayee's values)
-#   * tau_rxu = Core exit → Vessel exit (Using average between calculated values and Vajpayee's values)
-#   * Bypass flow (5.9%) at cold leg temp mixes in upper plenum, creating ~2.75K temp drop
-# - Receives 4 inputs from main.py:
-#    (1) cold leg temperature (Tc_in); (2) time step (dt); (3) turbine power demand in per-unit (P_turb); and (4) rod control mode (auto/manual)
-#    and outputs hot leg temperature (Th_out) and reactor power (P_out)
-# - Internal simulation #1: Tc rises (simulated at t=30 seconds), then Th and T_avg rise.
-#       PI controller sees T_avg > T_ref (since T_ref is constant with turbine at 1.0).
-#       Rods insert to reduce power, mimicking a load cut
-# - Internal simulation #2: runs for 100 seconds at steady-state and prints output variables every second
-# - Internal simulation #3: add 1 cent of reactivity (no rods)
-# - Internal simulation #4: subtract 1 cent of reactivity (no rods)
-# - Internal simulation #5: add 1 degree Fahrenheit to cold leg input temperature (no rods)
-# - Internal simulation #6: subtract 1 degree Fahrenheit from cold leg input temperature (no rods)
-
 import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
@@ -30,29 +5,35 @@ from scipy.interpolate import PchipInterpolator
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 
-# Global constants
-P_RATED_MWT = 3400.0  # MWt, AP1000 reactor core heat output from AP1000 DCD Chapter 4, Table 4.4-1
-P_RATED_MWE = 1122.0  # MWe, AP1000 nominal electric power at 33% eficiency
+from config import Config
+
+cfg = Config()
+
+P_RATED_MWT = cfg.P_core_nom_MWt  # MWt, AP1000 reactor core heat output from AP1000 DCD Chapter 4, Table 4.4-1
+P_RATED_MWE = cfg.P_e_nom_MWe  # MWe, AP1000 nominal electric power at 33% eficiency
 P_RATED_W = P_RATED_MWT * 1e6
 PCM_TO_DK = 1e-5  # conversion factor pcm to delta_k/k
-STROKE_IN = 166.755  # rod dimensions from AP1000 DCD Chapter 3, section 3.9.4.2.1
-VMAX_IN_PER_MIN = 45.0  # maximum travel in inches per minute from AP1000 DCD Chapter 3, section 3.9.4.2.1
-X_OP = 0.57  # 57% = initial rod insertion at BOC-HFP critical operations
-U = 1172.078  # W/m²·K, fuel-to-coolant heat transfer coefficient, calculated using average from Kerlin (H.B. Robinson) and Masoud/Appendix J values for delta_T_f-c
-A = 5267.6  # m², active heat transfer surface area from AP1000 DCD Chapter 4, Table 4.4-1
-UA = U * A  # W/K
-m_f = 95974.7  # kg UO2 from AP1000 DCD Chapter 4, Table 4.1-1
-cp_f = 313  # J/kg-K specific heat of fuel from Table 4.3 of Oak Ridge National Labs paper: https://info.ornl.gov/sites/publications/Files/Pub57523.pdf
-m_c = 12649.23  # kg coolant in core (calculated on 11/9/2025) m_c = (W*H)/v_c
-cp_JpkgK = 5541.398  # J/kg-K, specific heat capcity of coolant was 5545 from enghandbook.  NEW calculated value from
-W_kgps = 14275.56  # kg/s, effective mass flow rate of coolant in core (113.3 x 10^6 lbm/hr) from AP1000 DCD Chapter 5, Table 5.1-3
-f = 0.974  # % heat generated in fuel from AP1000 DCD Chapter 4, Table 4.1-1
-tau_f = (m_f * cp_f) / (UA)  # fuel-to-coolant heat transfer time constant
-tau_c = (m_c * cp_JpkgK) / (UA)  # time constant  for fuel-to-coolant heat transfer
-tau_r = m_c / W_kgps  # residence time of coolant in the core
-tau_rxi = 1.68  # s  Tcold_in -> T_core_inlet (downcomer + lower plenum lag)  (average of my calculation and Vajpayee numbers)
-tau_rxu = 2.06  # s  Tc2 -> T_hot_leg (upper plenum hot-leg lag)  (average of my calculation and Vajpayee numbers)
-f_bypass = 0.059  # Upper plenum bypass flow fraction (5.9%) - cooler flow bypasses core and mixes in upper plenum
+
+STROKE_IN = cfg.stroke_in  # rod dimensions from AP1000 DCD Chapter 3, section 3.9.4.2.1
+VMAX_IN_PER_MIN = cfg.vmax_rod_in_per_min  # maximum travel in inches per minute from AP1000 DCD Chapter 3, section 3.9.4.2.1
+X_OP = cfg.rod_insert_nom  # 57% = initial rod insertion at BOC-HFP critical operations
+U = cfg.U_fc_W_m2K  # W/m²·K, fuel-to-coolant heat transfer coefficient, calculated using average from Kerlin (H.B. Robinson) and Masoud/Appendix J values for delta_T_f-c
+A = cfg.A_fc_m2  # m², active heat transfer surface area from AP1000 DCD Chapter 4, Table 4.4-1
+UA = cfg.U_fc_W_m2K * cfg.A_fc_m2  # W/K
+m_f = cfg.m_fuel_core_kg  # kg UO2 from AP1000 DCD Chapter 4, Table 4.1-1
+cp_f = cfg.cp_fuel_core_J_kgK  # J/kg-K specific heat of fuel from Table 4.3 of Oak Ridge National Labs paper: https://info.ornl.gov/sites/publications/Files/Pub57523.pdf
+m_c = cfg.m_coolant_core_kg  # kg coolant in core (calculated on 11/9/2025) m_c = (W*H)/v_c
+cp_JpkgK = cfg.cp_coolant_core_J_kgK  # J/kg-K, specific heat capcity of coolant was 5545 from enghandbook.  NEW calculated value from
+W_kgps = cfg.m_dot_core_kg_s  # kg/s, effective mass flow rate of coolant in core (113.3 x 10^6 lbm/hr) from AP1000 DCD Chapter 5, Table 5.1-3
+f = cfg.f_fuel_fraction  # % heat generated in fuel from AP1000 DCD Chapter 4, Table 4.1-1
+tau_f = cfg.tau_f  # fuel-to-coolant heat transfer time constant
+tau_c = cfg.tau_c  # time constant  for fuel-to-coolant heat transfer
+tau_r = cfg.tau_r  # residence time of coolant in the core
+tau_rxi = cfg.tau_rxi_s  # inlet → core delay [s]
+tau_rxu = cfg.tau_rxu_s  # core → outlet delay [s]
+
+# Bypass fraction
+f_bypass = cfg.bypass_fraction  # upper-plenum bypass fraction [-]
 H_f = f * P_RATED_W / (m_f * cp_f)  # K/s per pu
 H_c = (1.0 - f) * P_RATED_W / (m_c * cp_JpkgK)  # K/s per pu
 RHO_STEP_PCM = 0.0  # for adding or subtracting cents of reactivity
@@ -78,6 +59,26 @@ def thermal_derivs(Tf, Tc1, Tc2, Tin, P_pu):
     return dTf, dTc1, dTc2
 
 
+def thermal_steady_state(Tin: float, P_pu: float):
+    """
+    Solve dTf=dTc1=dTc2=0 for the Holbert 3-state core thermal model.
+    Returns (Tf, Tc1, Tc2).
+    """
+    # From dTf=0: Tf - Tc1 = H_f * P_pu * tau_f
+    a = H_f * P_pu * tau_f
+
+    # The term (H_c*P + (Tf-Tc1)/tau_c) appears in both Tc eqns
+    qterm = H_c * P_pu + a / tau_c
+
+    # From dTc1=0: (2/tau_r)(Tc1 - Tin) = qterm
+    b = (tau_r / 2.0) * qterm
+
+    Tc1 = Tin + b
+    Tc2 = Tin + 2.0 * b
+    Tf = Tc1 + a
+    return Tf, Tc1, Tc2
+
+
 def step_thermal(dt, state, Tin, P_pu):
     Tf, Tc1, Tc2 = state
     # calculate derivatives at beginning of step
@@ -98,8 +99,8 @@ def step_thermal(dt, state, Tin, P_pu):
     return (Tf, Tc1, Tc2), Tc2  # Tc2 is the core outlet temperature (before upper plenum delay)
 
 
-DELTA_MWE = -50.0  # MWe, for load cut scenario
-STEP_T_S = 30.0  # seconds (time of the load cut or rod insertion) for internal simulation
+DELTA_MWE = 0.0  # MWe, for load cut scenario
+STEP_T_S = 0.0  # seconds (time of the load cut or rod insertion) for internal simulation
 P_TURB_STEP_PU = 1.0 + DELTA_MWE / P_RATED_MWE  # ≈ 0.9552 pu (50 MWe load reduction)
 
 
@@ -145,17 +146,17 @@ class RodWorthAP1000LUT:
 # Point Kinetics Parameters from AP1000 DCD Table 4.3-2
 @dataclass
 class PKParams:
-    Lambda: float = 19.8e-6  # seconds, Prompt neutron generation time from AP1000 DCD Chapter 4, Table 4.3-2
-    # Keepin shape for U-235 due to U-235 dominating at BOC
-    # U-235 delayed fractions and decay constants were provided in Table 3.1 from Kerlin-Upadhyaya textbook
-    beta_shape: np.ndarray = field(default_factory=lambda: np.array(
-        [0.000221, 0.001467, 0.001313, 0.002647, 0.000771, 0.000281], dtype=float))
-    lambda_i: np.ndarray = field(default_factory=lambda: np.array(
-        [0.0124, 0.0305, 0.111, 0.301, 1.14, 3.01], dtype=float))
-    beta_eff: float = 0.0075  # from AP1000 DCD Chapter 4, Table 4.3-2
+    Lambda: float = cfg.Lambda_prompt_s
+    beta_shape: np.ndarray = field(
+        default_factory=lambda: np.array(cfg.beta_shape_tuple, dtype=float)
+    )
+    lambda_i: np.ndarray = field(
+        default_factory=lambda: np.array(cfg.lambda_i_tuple, dtype=float)
+    )
+    beta_eff: float = cfg.beta_eff
 
-    # Scale beta values to beta_eff from Ap1000
     def __post_init__(self):
+        # Scale beta_i to sum to beta_eff
         self.beta_i = self.beta_shape * (self.beta_eff / float(self.beta_shape.sum()))
         self.beta = float(self.beta_i.sum())
 
@@ -163,17 +164,17 @@ class PKParams:
 # Temperature Feedback Parameters from AP1000 DCD Table 4.3-2
 @dataclass
 class FBParams:
-    # feedback coefficients in pcm/°F
-    # moderator coefficient chosen to match Kerlin value from H.B. Robinson paper
-    alpha_D_input: float = -1.4  # pcm/°F, Doppler
-    alpha_M_input: float = -20  # pcm/°F Moderator coefficient for inlet/avg coolant (70% weight of overall moderator temperature coefficient of -2e-4 delta_k/k/°F)
+    # Feedback coefficients in pcm/°F, from Config
+    alpha_D_input: float = cfg.alpha_D_pcm_per_F
+    alpha_M_input: float = cfg.alpha_M_pcm_per_F
     coeff_units: str = "F"
 
     # Reference temps (Kelvin) at HFP with bypass flow
-    T_f0: float = 1111.680  # Fuel temperature at steady state with bypass flow
-    T_m0: float = 575.305  # Kelvin, average coolant temperature (measured with bypass flow effect)
-    Tc10: float = 575.305  # Kelvin, first coolant lump temperature at steady state
-    Tc20: float = 596.793  # Kelvin, second coolant lump temperature at steady state
+    # These are specific to this core model, so it's fine to leave them here.
+    T_f0: float = cfg.T_f0
+    T_m0: float = cfg.T_m0
+    Tc10: float = cfg.Tc10
+    Tc20: float = cfg.Tc20
 
 
 # Sliding T_avg program ----------------
@@ -211,28 +212,28 @@ def _deadband(e: float, db: float) -> float:
 @dataclass
 class ControlParams:
     # PI Controller Gains
-    Kp: float = 0.00030  # proportional gain
-    Ki: float = 0.000015  # integral gain
+    Kp: float = cfg.Kp_rc  # proportional gain
+    Ki: float = cfg.Ki_rc  # integral gain
 
     # Power Tracking Controller
-    Kpow_i: float = 0.30  # power gain
+    Kpow_i: float = cfg.Kpow_i_rc  # power gain
 
     # Feedforward Compensation
-    Kff: float = 0.10  # feedforward gain
+    Kff: float = cfg.Kff_rc  # feedforward gain
 
     # Stability Features
-    K_AW: float = 2.0  # Anti-windup back-calculation gain
-    LEAK: float = 0.10  # Inner loop integral leak [1/s] - high for stability
-    LEAK_OUTER: float = 0.0  # Outer loop integral leak [1/s] - high for stability
-    DB_K: float = 0.3  # Temperature deadband [K] - large to prevent hunting
-    P_DEADBAND: float = 0.005  # Power deadband [pu] (4%)
+    K_AW: float = cfg.K_AW_rc  # Anti-windup back-calculation gain
+    LEAK: float = cfg.LEAK_rc  # Inner loop integral leak [1/s] - high for stability
+    LEAK_OUTER: float = cfg.LEAK_OUTER_rc  # Outer loop integral leak [1/s] - high for stability
+    DB_K: float = cfg.DB_rc_K  # Temperature deadband [K] - large to prevent hunting
+    P_DEADBAND: float = cfg.P_DEADBAND_rc  # Power deadband [pu] (4%)
 
     # Rate and Position Limits
-    U_MAX: float = 0.0045  # Maximum controller output [1/s] based on physical limits
-    x_rate_max: float = (VMAX_IN_PER_MIN / 60.0) / STROKE_IN  # max rod speed [1/s]
+    U_MAX: float = cfg.U_MAX_rc  # Maximum controller output [1/s] based on physical limits
+    x_rate_max: float = (cfg.vmax_rod_in_per_min / 60.0) / cfg.stroke_in  # max rod speed [1/s]
     x_min: float = 0.0  # fully withdrawn
     x_max: float = 1.0  # fully inserted
-    Z_BIAS_MAX: float = 8.0  # Maximum power bias [K]
+    Z_BIAS_MAX: float = cfg.Z_BIAS_MAX_rc  # Maximum power bias [K]
 
 
 class ReactorSimulator:
@@ -265,45 +266,37 @@ class ReactorSimulator:
 
         # Calculate equilibrium temperatures if not provided
         if Tc_init is None:
-            Tc_init = 553.82  # K  (537.2°F)
+            Tc_init = 545.89  # K
 
         self.Tc_external = Tc_init  # Store for reference
 
         # Initialize state variables
         # There are 5 temperature states instead of 3
         # Tf, Tc1, Tc2 (core thermal model) + T_core_inlet, T_hot_leg (transport delays)
-        #self.Tf = self.fb.T_f0
-        #self.Tc1 = self.fb.Tc10
-        #self.Tc2 = self.fb.Tc20
 
-        # Compute exact thermal steady-state for Holbert model at Tin=Tc_init and initial power
-        P0 = 1.0  # or use P_turb_init if you want to start at that per-unit power
+        # Start power consistent with initial turbine demand (pu)
+        self.P_pu = float(P_turb_init)
 
-        A = H_c * P0 + (tau_f * H_f * P0) / tau_c
-        Tc1_eq = Tc_init + (tau_r / 2.0) * A
-        Tc2_eq = 2.0 * Tc1_eq - Tc_init
-        Tf_eq = Tc1_eq + tau_f * H_f * P0
+        # Steady-state core temps for current inlet Tin and power
+        Tf_ss, Tc1_ss, Tc2_ss = thermal_steady_state(Tc_init, self.P_pu)
+        self.Tf = Tf_ss
+        self.Tc1 = Tc1_ss
+        self.Tc2 = Tc2_ss
 
-        # Set BOTH the state temps AND the feedback references to the exact equilibrium
-        self.Tf = Tf_eq
-        self.Tc1 = Tc1_eq
-        self.Tc2 = Tc2_eq
+        # --- make rho_fb start at ~0 pcm ---
+        self.fb.T_f0 = float(self.Tf)
+        self.fb.Tc10 = float(self.Tc1)
+        self.fb.Tc20 = float(self.Tc2)
 
-        self.fb.T_f0 = Tf_eq
-        self.fb.Tc10 = Tc1_eq
-        self.fb.Tc20 = Tc2_eq
-        self.fb.T_m0 = Tc1_eq  # since you use Tc1 for moderator feedback
+        # keep the programmed Tref schedule consistent too
+        self.fb.T_m0 = float(self.Tc1)
 
-        self.T_core_inlet = Tc_init  # (553.82 K)
+        # Transport-delay states consistent with steady-state
+        self.T_core_inlet = Tc_init
         f_bypass = 0.059
-        #T_mix0 = (1 - f_bypass) * self.fb.Tc20 + f_bypass * Tc_init
-        T_mix0 = (1 - f_bypass) * Tc2_eq + f_bypass * Tc_init
-        self.T_hot_leg = T_mix0
+        self.T_hot_leg = (1 - f_bypass) * Tc2_ss + f_bypass * Tc_init
 
-        # Point kinetics state
-        #self.P_pu = 1.0  # normalized power
-        #self.C = self.pk.beta_i / (self.pk.Lambda * self.pk.lambda_i)  # precursor concentrations
-        self.P_pu = P0
+        # Precursor concentrations at equilibrium for current power
         self.C = (self.pk.beta_i / (self.pk.Lambda * self.pk.lambda_i)) * self.P_pu
 
         # Control state
@@ -319,8 +312,12 @@ class ReactorSimulator:
         # For diagnostics
         self.t = 0.0
 
-        self.rho_total = 0.0  # Δk/k, exposed for logging
-        self.rho_total_pcm = 0.0
+        # Reactivity diagnostics (pcm and delta-k/k)
+        self.rho_fb_pcm = 0.0
+        self.rho_rod_pcm = 0.0
+        self.rho_ext_pcm = 0.0
+        self.rho_tot_pcm = 0.0
+        self.rho_tot = 0.0
 
     def _compute_derivs(self, t, y, Tc_in_external, P_turb):
         """
@@ -367,8 +364,12 @@ class ReactorSimulator:
         rho_tot_pcm = rho_fb_pcm + rho_rod_pcm + rho_ext_pcm
         rho_tot = rho_tot_pcm * PCM_TO_DK
 
-        self.rho_total_pcm = float(rho_tot_pcm)
-        self.rho_total = float(rho_tot)
+        # Store reactivity components for diagnostics
+        self.rho_fb_pcm = rho_fb_pcm
+        self.rho_rod_pcm = rho_rod_pcm
+        self.rho_ext_pcm = rho_ext_pcm
+        self.rho_tot_pcm = rho_tot_pcm
+        self.rho_tot = rho_tot
 
         # Point kinetics
         rho_minus_beta = rho_tot - self.pk.beta
@@ -394,8 +395,6 @@ class ReactorSimulator:
             # HOLD RODS & INTEGRATORS BEFORE THE LOAD CUT
             # -----------------------------------------------------
             if t < STEP_T_S:
-                # No rod motion; freeze integrals so we stay at
-                # the exact equilibrium until the load cut.
                 dx_dt = 0.0
                 dz_integral_dt = 0.0
                 dz_pow_bias_dt = 0.0
@@ -483,9 +482,11 @@ class ReactorSimulator:
 
         else:
             # Manual Rod Mode ignores controllers and uses externally commanded rod speed, but within physical rod limits
-            u_cmd = 0.0 if self.manual_u is None else float(self.manual_u)
-            u_manual = np.clip(u_cmd, -self.ctrl.x_rate_max, self.ctrl.x_rate_max)
-
+            # Guard against None so numpy.clip never sees a NoneType.
+            u_raw = 0.0 if self.manual_u is None else self.manual_u
+            u_manual = np.clip(u_raw,
+                               -self.ctrl.x_rate_max,
+                               self.ctrl.x_rate_max)
             dx_dt = u_manual
 
             # Let integrals wind down toward zero while in manual
@@ -525,6 +526,9 @@ class ReactorSimulator:
             self.control_mode = control_mode
 
         # Store current manual rod speed command (used only in manual mode)
+        # Guard against None so numpy clip never sees a NoneType.
+        if manual_u is None:
+            manual_u = 0.0
         self.manual_u = manual_u
 
         # Store for diagnostics
@@ -545,26 +549,6 @@ class ReactorSimulator:
         y0[12] = self.x
         y0[13] = self.z_integral
         y0[14] = self.z_pow_bias
-
-        # --- DEBUG: print initial conditions used by solver (once) ---
-        if not hasattr(self, "_dbg_init_printed"):
-            self._dbg_init_printed = True
-
-            print("\n[RX init snapshot (values used to build y0)]")
-            print(f"  t={self.t:.3f}  dt={dt:.3f}  Tc_in(external)={Tc_in:.3f}  P_turb={P_turb:.6f}")
-            print(f"  Tf={self.Tf:.3f}  Tc1={self.Tc1:.3f}  Tc2={self.Tc2:.3f}")
-            print(f"  fb.T_f0={self.fb.T_f0:.3f}  fb.Tc10={self.fb.Tc10:.3f}  fb.Tc20={self.fb.Tc20:.3f}")
-            print(f"  Tf-T_f0={self.Tf-self.fb.T_f0:+.3f}  Tc1-Tc10={self.Tc1-self.fb.Tc10:+.3f}  Tc2-Tc20={self.Tc2-self.fb.Tc20:+.3f}")
-
-            # Point kinetics state
-            Ci_str = ", ".join(f"{c:.3e}" for c in np.array(self.C).ravel())
-            print(f"  P_pu={self.P_pu:.6f}")
-            print(f"  C_i=[{Ci_str}]")
-
-            # Optional: show initial thermal derivatives to confirm equilibrium (should be ~0)
-            dTf0, dTc10, dTc20 = thermal_derivs(self.Tf, self.Tc1, self.Tc2, self.T_core_inlet, self.P_pu)
-            print(f"  dTf/dt={dTf0:+.6e}  dTc1/dt={dTc10:+.6e}  dTc2/dt={dTc20:+.6e}\n")
-
 
         # Integrate
         t_span = [self.t, self.t + dt]
@@ -603,7 +587,7 @@ class ReactorSimulator:
         """Get diagnostic information about current reactor state."""
         # T_avg as measured by plant instrumentation (cold leg + hot leg "RTDs")
         T_avg = 0.5 * (self.T_core_inlet + self.T_hot_leg) if hasattr(self, 'Tc_in') else 0.5 * (
-                    self.T_core_inlet + self.Tc2)
+                self.T_core_inlet + self.Tc2)
 
         return {
             't': self.t,
@@ -619,385 +603,12 @@ class ReactorSimulator:
             'T_hot_leg': self.T_hot_leg,
             'T_avg': T_avg,
             'z_integral': self.z_integral,
-            'z_pow_bias': self.z_pow_bias
+            'z_pow_bias': self.z_pow_bias,
+            'rho_fb_pcm': self.rho_fb_pcm,
+            'rho_rod_pcm': self.rho_rod_pcm,
+            'rho_ext_pcm': self.rho_ext_pcm,
+            'rho_tot_pcm': self.rho_tot_pcm,
+            'rho_tot': self.rho_tot,
         }
 
 
-def run_four_scenarios():  # not used by main
-    # """
-    # Run four reactivity/temperature perturbation scenarios.
-    # All scenarios start from steady-state with no control rods active.
-    # """
-    fb = FBParams()
-
-    # Calculate correct steady-state temperatures with bypass flow
-    Tc_inlet = (2.0 * fb.T_m0 - (1.0 - f_bypass) * fb.Tc20) / (1.0 + f_bypass)
-
-    scenarios = {
-        'plus_1_cent': {
-            'title': '+1 cent reactivity',
-            'rho_step_pcm': 7.5,  # +1 cent = +0.01 * 750 pcm
-            'dTc_F': 0.0
-        },
-        'minus_1_cent': {
-            'title': '-1 cent reactivity',
-            'rho_step_pcm': -7.5,  # -1 cent
-            'dTc_F': 0.0
-        },
-        'plus_1F': {
-            'title': '+1°F cold leg temperature',
-            'rho_step_pcm': 0.0,
-            'dTc_F': 1.0
-        },
-        'minus_1F': {
-            'title': '-1°F cold leg temperature',
-            'rho_step_pcm': 0.0,
-            'dTc_F': -1.0
-        }
-    }
-
-    results = {}
-
-    for name, config in scenarios.items():
-        print(f"\n{'=' * 60}")
-        print(f"Running scenario: {config['title']}")
-        print(f"{'=' * 60}")
-
-        # Set reactivity step
-        set_rho_step(config['rho_step_pcm'])
-
-        # Calculate input temperature
-        dTc_K = config['dTc_F'] * 5.0 / 9.0
-        Tc_in = Tc_inlet + dTc_K
-
-        print(f"Reactivity step: {config['rho_step_pcm']:.2f} pcm")
-        print(f"Cold leg temp: {Tc_in:.2f} K (ΔT = {config['dTc_F']:.1f}°F)")
-
-        # Initialize reactor in manual mode (no control)
-        reactor = ReactorSimulator(Tc_init=Tc_inlet, control_mode="manual")
-
-        # Simulation parameters
-        t_end = 60.0
-        dt = 0.05
-        n_steps = int(t_end / dt)
-
-        # Storage
-        times = []
-        P_MWt = []
-        T_avg = []
-        T_f = []
-        T_c2 = []
-        T_core_inlet_log = []
-        T_hot_leg_log = []
-
-        # Run simulation
-        t = 0.0
-        for i in range(n_steps):
-            Th_out, P_out = reactor.step(Tc_in, dt, P_turb=1.0, control_mode="manual", manual_u=0.0)
-            diag = reactor.get_diagnostics()
-
-            times.append(t)
-            P_MWt.append(diag['P_MWt'])
-            T_avg.append(diag['T_avg'])
-            T_f.append(diag['Tf'])
-            T_c2.append(diag['Tc2'])
-            T_core_inlet_log.append(diag['T_core_inlet'])
-            T_hot_leg_log.append(diag['T_hot_leg'])
-
-            t += dt
-
-        # Store results
-        results[name] = {
-            't': np.array(times),
-            'P_MWt': np.array(P_MWt),
-            'T_avg': np.array(T_avg),
-            'T_f': np.array(T_f),
-            'T_c2': np.array(T_c2),
-            'T_core_inlet': np.array(T_core_inlet_log),
-            'T_hot_leg': np.array(T_hot_leg_log),
-            'config': config
-        }
-
-        print(f"Final power: {P_MWt[-1]:.1f} MWt")
-        print(f"Final T_avg: {T_avg[-1]:.2f} K")
-
-    return results
-
-
-def plot_four_scenarios(results):  # not used by main
-    # """Plot the four reactivity/temperature scenarios."""
-
-    # results is a dict: {scenario_name: scenario_result_dict}
-    for name, res in results.items():
-        t = res["t"]
-        Pmw = res["P_MWt"]
-        Tf = res["T_f"]
-        Tavg = res["T_avg"]
-
-        Tf_plot = Tf
-        Tavg_plot = Tavg
-        tlabel = "Temperature (K)"
-
-        # Get a title from config
-        title = res.get("config", {}).get("title", name)
-
-        fig, axes = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=True)
-        fig.suptitle(title, fontsize=12, fontweight="bold")
-
-        # Power
-        ax = axes[0]
-        ax.plot(t, Pmw)
-        ax.set_title("Reactor Power")
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Power (MWt)")
-        ax.grid(True, alpha=0.3)
-
-        # Fuel temperature
-        ax = axes[1]
-        ax.plot(t, Tf_plot)
-        ax.set_title("Fuel Temperature (K)")
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel(tlabel)
-        ax.grid(True, alpha=0.3)
-
-        # Coolant temperature
-        ax = axes[2]
-        ax.plot(t, Tavg_plot)
-        ax.set_title("Average Coolant Temperature (K)")
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel(tlabel)
-        ax.grid(True, alpha=0.3)
-
-        plt.show()
-
-
-def run_load_cut_simulation():  # shouldn't be run by main during plant-coupled simulation
-    """
-    Run the load cut simulation where turbine demand drops at t=10s.
-    """
-    print("Running load cut simulation...")
-    print(f"Load change: {DELTA_MWE} MWe at t={STEP_T_S}s")
-    print(f"New turbine power: {P_TURB_STEP_PU:.4f} pu")
-
-    # Use the same equilibrium cold-leg temperature as the Rev10 core model
-    # 537.2°F = 553.82 K
-    Tc_inlet = 553.817  # K
-    print(f"Using equilibrium cold-leg temperature: {Tc_inlet:.2f} K")
-
-    # For information: core and loop temperature rise at HFP
-    dT_core_HFP = P_RATED_W / (W_kgps * cp_JpkgK)  # Temperature rise through core
-    dT_loop = dT_core_HFP * (1.0 - f_bypass)
-    print(f"Core dT at HFP: {dT_core_HFP:.2f} K")
-    print(f"Measured loop dT (with bypass): {dT_loop:.2f} K")
-
-    # Initialize reactor
-    reactor = ReactorSimulator(Tc_init=Tc_inlet, P_turb_init=1.0, control_mode="auto")
-
-    # Simulation parameters
-    t_end = 300.0  # seconds
-    dt = 0.05
-    n_steps = int(t_end / dt)
-
-    # ------------------------------------------------------------------
-    # Simple cold-leg temperature transient model (Option A):
-    # After the load cut, the cold leg warms up by a few kelvin
-    # with an approximate first-order time response.
-    # ------------------------------------------------------------------
-    Tc_rise_K = 3.0  # asymptotic cold-leg increase [K] after load cut
-    Tc_tau_s = 8.0  # time constant [s] for cold-leg warming
-
-    # Storage for results
-    times = []
-    P_MWt = []
-    x_rods = []
-    T_avg = []
-    T_f = []
-    T_c2 = []
-    T_core_inlet_log = []
-    T_hot_leg_log = []
-    P_turb_log = []
-    z_integral = []
-    z_pow_bias = []
-
-    # Time-stepping loop
-    t = 0.0
-    for i in range(n_steps):
-        # Turbine power demand: step down at t = STEP_T_S
-        P_turb = 1.0 if t < STEP_T_S else P_TURB_STEP_PU
-
-        # Cold-leg temperature transient (Option A):
-        # Before the load cut: stay at equilibrium Tc_inlet.
-        # After the load cut: ramp up toward Tc_inlet + Tc_rise_K
-        if t < STEP_T_S:
-            Tc_in = Tc_inlet
-        else:
-            dt_step = t - STEP_T_S
-
-            # Fast initial cold-leg temperature rise (steam flow drop)
-            T_fast = 0.8 * (1 - np.exp(-dt_step / 2.0))  # 2 K in ~1–2 s
-
-            # Slower long-tail asymptotic rise (SG metal warming, recirc effects)
-            T_slow = 0.4 * (1 - np.exp(-dt_step / 10.0))  # additional 1.5 K in ~8 s
-
-            Tc_in = Tc_inlet + T_fast + T_slow
-
-        # Step the reactor with the current cold-leg temperature and turbine demand
-        Th_out, P_out = reactor.step(Tc_in, dt, P_turb=P_turb, manual_u=0.0)
-
-        # Get diagnostics
-        diag = reactor.get_diagnostics()
-
-        # Store results
-        times.append(t)
-        P_MWt.append(diag['P_MWt'])
-        x_rods.append(diag['x_rods'])
-        T_avg.append(diag['T_avg'])
-        T_f.append(diag['T_f'])
-        T_c2.append(diag['Tc2'])
-        T_core_inlet_log.append(diag['T_core_inlet'])
-        T_hot_leg_log.append(diag['T_hot_leg'])
-        P_turb_log.append(P_turb)
-        z_integral.append(diag['z_integral'])
-        z_pow_bias.append(diag['z_pow_bias'])
-
-        # Print progress every 10 seconds
-        if i % int(10.0 / dt) == 0:
-            print(f"t={t:.1f}s: P={P_out:.1f} MWt, T_avg={diag['T_avg']:.2f} K, "
-                  f"x={diag['x_rods'] * 100:.2f}%, P_turb={P_turb:.4f} pu")
-
-        t += dt
-
-    # Convert to numpy arrays
-    results = {
-        't': np.array(times),
-        'P_MWt': np.array(P_MWt),
-        'x_rods': np.array(x_rods),
-        'T_avg': np.array(T_avg),
-        'T_f': np.array(T_f),
-        'T_c2': np.array(T_c2),
-        'T_core_inlet': np.array(T_core_inlet_log),
-        'T_hot_leg': np.array(T_hot_leg_log),
-        'P_turb': np.array(P_turb_log),
-        'z_integral': np.array(z_integral),
-        'z_pow_bias': np.array(z_pow_bias)
-    }
-
-    # Plot results
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(4, 2, figsize=(14, 12))
-    fig.suptitle(f'Rev 15: {DELTA_MWE} MWe reduction at t={STEP_T_S}s',
-                 fontsize=14, fontweight='bold')
-
-    # Power
-    axes[0, 0].plot(results['t'], results['P_MWt'])
-    axes[0, 0].set_ylabel('Power (MWt)')
-    axes[0, 0].set_xlabel('Time (s)')
-    axes[0, 0].set_title('Reactor Power')
-    axes[0, 0].grid(True, alpha=0.3)
-    axes[0, 0].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5, label='Load cut')
-    axes[0, 0].legend()
-
-    # Rod position
-    axes[0, 1].plot(results['t'], results['x_rods'] * 100)
-    axes[0, 1].set_ylabel('Rod Position (%)')
-    axes[0, 1].set_xlabel('Time (s)')
-    axes[0, 1].set_title('Control Rod Position')
-    axes[0, 1].grid(True, alpha=0.3)
-    axes[0, 1].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-
-    # Average coolant temperature
-    axes[1, 0].plot(results['t'], results['T_avg'])
-    axes[1, 0].set_ylabel('Temperature (K)')
-    axes[1, 0].set_xlabel('Time (s)')
-    axes[1, 0].set_title('Average Coolant Temperature')
-    axes[1, 0].grid(True, alpha=0.3)
-    axes[1, 0].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-
-    # Fuel temperature
-    axes[1, 1].plot(results['t'], results['T_f'])
-    axes[1, 1].set_ylabel('Temperature (K)')
-    axes[1, 1].set_xlabel('Time (s)')
-    axes[1, 1].set_title('Fuel Temperature')
-    axes[1, 1].grid(True, alpha=0.3)
-    axes[1, 1].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-
-    # Core outlet vs Hot leg (showing transport delay)
-    axes[2, 0].plot(results['t'], results['T_c2'], label='Core Outlet (Tc2)', linewidth=2)
-    axes[2, 0].plot(results['t'], results['T_hot_leg'], label='Hot Leg (delayed)', linewidth=2, linestyle='--')
-    axes[2, 0].set_ylabel('Temperature (K)')
-    axes[2, 0].set_xlabel('Time (s)')
-    axes[2, 0].set_title('Hot Leg Transport Delay (tau_rxu = 2.06s)')
-    axes[2, 0].grid(True, alpha=0.3)
-    axes[2, 0].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-    axes[2, 0].legend()
-
-    # Core inlet (showing transport delay)
-    axes[2, 1].plot(results['t'], results['T_core_inlet'], label='Core Inlet (delayed)')
-    axes[2, 1].set_ylabel('Temperature (K)')
-    axes[2, 1].set_xlabel('Time (s)')
-    axes[2, 1].set_title('Core Inlet Transport Delay (tau_rxi = 1.68s)')
-    axes[2, 1].grid(True, alpha=0.3)
-    axes[2, 1].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-    axes[2, 1].legend()
-
-    # Turbine demand
-    axes[3, 0].plot(results['t'], results['P_turb'])
-    axes[3, 0].set_ylabel('Turbine Demand (pu)')
-    axes[3, 0].set_xlabel('Time (s)')
-    axes[3, 0].set_title('Turbine Power Demand')
-    axes[3, 0].grid(True, alpha=0.3)
-    axes[3, 0].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-    axes[3, 0].set_ylim([0.94, 1.02])
-
-    # Control integrals
-    axes[3, 1].plot(results['t'], results['z_integral'], label='Temperature integral')
-    axes[3, 1].plot(results['t'], results['z_pow_bias'], label='Power bias')
-    axes[3, 1].set_ylabel('Integral State')
-    axes[3, 1].set_xlabel('Time (s)')
-    axes[3, 1].set_title('Control Integrals')
-    axes[3, 1].grid(True, alpha=0.3)
-    axes[3, 1].axvline(x=STEP_T_S, color='r', linestyle='--', alpha=0.5)
-    axes[3, 1].legend()
-
-    plt.tight_layout()
-    plt.show()
-
-    print("\nLoad cut simulation complete!")
-    return results
-
-
-if __name__ == "__main__":
-    RUN_TEST_1 = False  # Load cut simulation
-    RUN_TEST_2 = False  # Time-stepping test
-
-    if RUN_TEST_1:
-        print("=" * 60)
-        print("Test 1: Load Cut Simulation with Transport Delays")
-        print("=" * 60)
-        results = run_load_cut_simulation()
-
-    if RUN_TEST_2:
-        print("\n" + "=" * 60)
-        print("Test 2: Time-stepping interface with ReactorSimulator")
-        print("=" * 60)
-
-        reactor = ReactorSimulator()
-
-        dt = 0.1
-        for i in range(1000):
-            t_sim = i * dt
-            T_avg_ref = 574.039
-            dT_core_HFP = P_RATED_W / (W_kgps * cp_JpkgK)
-            Tc_in = 553.817  # K  (537.2°F)
-            Th_out, P_out = reactor.step(Tc_in, dt, control_mode="manual")
-
-            if i % 10 == 0:
-                diag = reactor.get_diagnostics()
-                print(f"t={t_sim:.1f}s: P={P_out:.1f} MWt, Th={Th_out:.1f} K, x={diag['x_rods'] * 100:.2f}%")
-
-        print("\nBoth tests complete!")
-
-    # Commenting out 4 scenarios internal test lines below
-    # results = run_four_scenarios()
-    # plot_four_scenarios(results)

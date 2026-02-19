@@ -3,7 +3,6 @@ from config import Config
 
 cfg = Config()
 
-
 @dataclass
 class PlantState:
     # Time
@@ -20,12 +19,12 @@ class PlantState:
     pzr_level_m: float = 0.0
     pzr_heater_pu: float = 0.0
     pzr_spray_pu: float = 0.0
-    pzr_heater_frac: float = 0.0        # continuous heater output 0-1 (after lag)
-    pzr_heater_kW: float = 0.0          # heater thermal power [kW]
-    pzr_surge_direction: str = "NEUTRAL" # "IN-SURGE", "OUT-SURGE", or "NEUTRAL"
+    pzr_heater_frac: float = 0.0               # continuous heater output 0-1 (after lag)
+    pzr_heater_kW: float = 0.0                 # heater thermal power [kW]
+    pzr_surge_direction: str = "NEUTRAL"       # "IN-SURGE", "OUT-SURGE", or "NEUTRAL"
     pzr_pressure_setpoint_Pa: float = 15.50e6  # shifted pressure setpoint [Pa]
 
-    # --- Steam generator temperatures (for plotting) ---
+    # Steam generator temperatures (for plotting)
     # Primary side around the SG
     T_sg_in_K: float = cfg.T_hot_nom_K
     T_sg_out_K: float = cfg.T_cold_nom_K
@@ -43,14 +42,12 @@ class PlantState:
 
     # Power + reactivity (stored in MW)
     P_core_MW: float = cfg.P_core_nom_MWt
-    # Initialize turbine power to match natural plant capability (~97.6% of rated)
-    # This prevents initial transient from turbine controller
-    P_turbine_MW: float = cfg.P_e_nom_MWe * 1.0  # ~1095 MWe, not 1122
+    P_turbine_MW: float = cfg.P_e_nom_MWe * 1.0 # ~1095 MWe
     rod_pos_pu: float = cfg.rod_insert_nom      # 0 = withdrawn, 1 = inserted
     rho_reactivity_dk: float = 0.0              # Δk/k
 
     # user commands
-    load_demand_pu: float = 1.0  # Changed from 1.0 to match natural capability
+    load_demand_pu: float = 1.0
     rod_mode: str = "auto"
     rod_cmd_manual_pu: float = 0.0              # used when rod_mode = 'manual'
 
@@ -62,7 +59,6 @@ class PlantState:
         return replace(self, t_s=self.t_s + dt)
 
     def clip_invariants(self) -> "PlantState":
-        # bounds (broad; move to Config later if needed)
         T_hot = float(max(250.0, min(1100.0, self.T_hot_K)))
         T_cold = float(max(250.0, min(1100.0, self.T_cold_K)))
         P_pri = float(max(1.0e5, self.P_primary_Pa))

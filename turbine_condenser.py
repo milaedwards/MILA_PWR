@@ -1,25 +1,8 @@
-
-# turbine_condenser.py  –  Condensing turbine + flow controller (NO CoolProp)
-#
-# The two CoolProp calls were:
-#   s_in          = PropsSI("S", "P", inlet_p, "H", h_in, "Water")
-#   h_out_isen    = PropsSI("H", "P", outlet_p, "S", s_in, "Water")
-#
-# Replacement strategy:
-#   1) s_in is looked up from the NIST saturation table.  The turbine inlet
-#      is always near-saturation steam from the SG, so s ≈ s_v(P_inlet).
-#   2) At the condenser (~9.82 kPa) the exhaust is deep in the two-phase dome.
-#      h_out_isen = h_l + x*(h_v - h_l)   where  x = (s_in - s_l)/(s_v - s_l)
-#
-# Everything else (efficiency model, flow controller) is unchanged.
-
 import bisect
 from config import Config
 
-# ================================================================
 # Shared saturation table  (same source as pressurizer.py)
 # Columns: P_MPa, T_K, rho_l, rho_v, h_l, h_v, cp_l, s_l, s_v
-# ================================================================
 _SAT = [
     ( 0.00982, 316.00,  996.5,  0.06034,  184.0e3,  2584.0e3,  4180,  622.6,  8150.2),   # condenser
     ( 0.10,    372.76,  958.4,  0.5978,   417.5e3,  2675.0e3,  4217, 1302.8,  7359.4),
@@ -59,13 +42,6 @@ def _s_v(P): return _sat_interp(P, 8)
 
 
 class TurbineModel:
-    """
-    Condensing steam turbine + simple flow controller.
-
-    Uses Config for nominal values; efficiencies and condenser pressure
-    fall back to hard-coded AP1000-consistent defaults if not present.
-    """
-
     def __init__(self, cfg: Config | None = None):
         self.cfg = cfg or Config()
 
@@ -73,7 +49,6 @@ class TurbineModel:
         self.generator_efficiency = getattr(self.cfg, "generator_efficiency", 0.90)
         self.outlet_p             = getattr(self.cfg, "P_condenser_Pa",       9820.53)   # Pa
 
-    # ------------------------------------------------------
     def turbine_power(
         self,
         inlet_p: float,      # [Pa]
@@ -81,13 +56,7 @@ class TurbineModel:
         outlet_p: float,     # [Pa]
         m_dot_steam: float,  # [kg/s]
     ) -> float:
-        """
-        Electrical power [MW] via isentropic expansion.
 
-        Inlet entropy = s_v(inlet_p) because the SG delivers near-saturation
-        steam.  Outlet enthalpy is computed from two-phase quality at the
-        condenser pressure.
-        """
         h_in = inlet_h
 
         # Inlet entropy (sat-vapor at SG pressure)
@@ -111,7 +80,6 @@ class TurbineModel:
 
         return self.generator_efficiency * specific_work * m_dot_steam / 1.0e6  # [MW]
 
-    # ------------------------------------------------------
     def update_mass_flow_rate(
         self,
         m_dot_steam: float,
@@ -119,10 +87,9 @@ class TurbineModel:
         power_dem: float,
         dt: float,
     ) -> float:
-        """
-        Flow controller with NRC-style rate limits:
-            10 %/s step   +   5 %/min ramp
-        """
+        # Flow controller with NRC-style rate limits:
+        # 10 %/s step + 5 %/min ramp
+
         eps   = 1.0e-6
         denom = max(abs(power_dem), eps)
 
@@ -140,9 +107,7 @@ class TurbineModel:
 
         return max(m_dot_steam + m_dot_update, 0.0)
 
-    # ======================================================
-    #                   MAIN STEP
-    # ======================================================
+    # MAIN STEP
     def step(
         self,
         inlet_h: float,
@@ -151,11 +116,7 @@ class TurbineModel:
         power_dem: float,
         dt: float,
     ) -> tuple[float, float]:
-        """
-        Returns:
-            power_output_MW [MW]
-            m_dot_steam_new [kg/s]
-        """
+
         power_output = self.turbine_power(
             inlet_p=inlet_p,
             inlet_h=inlet_h,

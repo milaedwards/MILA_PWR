@@ -1,22 +1,8 @@
-"""
-AP1000 PWR Simulator – NiceGUI Dashboard
-=========================================
-A real-time, interactive GUI that mirrors the plant schematic,
-with live readouts linked to the simulator's PlantState variables.
-
-Run:
-    pip install nicegui
-    python gui_app.py
-
-The browser will open at http://localhost:8080
-"""
-
 from nicegui import ui
 from collections import deque
 import copy
 import time
 
-# ── Import your simulator modules (they must be on PYTHONPATH) ──────────
 from config import Config
 from plant_state import PlantState
 from reactor_core import ReactorSimulator
@@ -29,12 +15,10 @@ from pathlib import Path
 def html(content: str):
     return ui.html(content, sanitize=False)
 
-PWR_SVG_PATH = Path('pwr_diagram.svg')  # <-- rename to your actual exported file
+PWR_SVG_PATH = Path('pwr_diagram.svg')
 PWR_SVG_TEXT = PWR_SVG_PATH.read_text(encoding='utf-8')
 
-# ══════════════════════════════════════════════════════════════════════════
 # TRENDING / PLOT SYSTEM
-# ══════════════════════════════════════════════════════════════════════════
 TREND_MAX_PTS = 300  # ring buffer depth per parameter
 
 # Map display-key → (human label, unit, color, value_getter_from_ps)
@@ -57,15 +41,10 @@ PLOTTABLE_PARAMS = {
 # Ring buffers: key → deque of (t_s, value)
 _trend_data: dict[str, deque] = {k: deque(maxlen=TREND_MAX_PTS) for k in PLOTTABLE_PARAMS}
 
-# Active plot slots: list of 4 entries, each None or a display-key string
 _plot_slots: list[str | None] = [None, None, None, None]
-# EChart widget references (set during page build)
 _plot_charts: list = [None, None, None, None]
-# Label refs for slot headers
 _plot_headers: list = [None, None, None, None]
 
-
-# ── Simulator bootstrap ─────────────────────────────────────────────────
 cfg = Config()
 dt = 0.1  # integration time-step [s]
 
@@ -86,7 +65,6 @@ steamgen = SteamGenerator(cfg)
 turbine = TurbineModel(cfg)
 ics = ICSystem(cfg=cfg, reactor=reactor, steamgen=steamgen, turbine=turbine)
 
-# Sync initial state
 ps.T_hot_K = reactor.T_hot_leg
 ps.P_core_MW = reactor.P_pu * cfg.P_core_nom_MWt
 ps.rod_pos_pu = reactor.x
@@ -98,25 +76,19 @@ ps.m_dot_steam_kg_s = m0
 ps.steam_h_J_kg = h0
 ps.T_metal_K = steamgen.T_metal_K
 
-# ── Simulation state ────────────────────────────────────────────────────
-
+# Simulation state
 sim_running = False
 sim_speed = 1  # how many dt steps per GUI tick (1 => time advances by dt = 0.1s per tick)
 
-# --- UI refresh throttling (helps on low-RAM / slower machines) ---
-# We can advance the simulation quickly, but only redraw the GUI at a steady rate
-# so the browser/event-loop doesn't get overwhelmed.
 _UI_REFRESH_HZ = 15.0                 # target GUI redraw rate
 _UI_REFRESH_DT = 1.0 / _UI_REFRESH_HZ
 _last_ui_update_wall_s = 0.0          # last redraw time (wall clock)
 
 
-# --- Simulator hard reset function ---
+# Hard reset function
 def _reset_simulator_state():
-    """Hard reset the simulator to initial conditions."""
     global ps, reactor, steamgen, turbine, ics, _plot_slots
 
-    # Fresh state
     ps = PlantState()
     ps.load_demand_pu = 1.0
     ps.P_turbine_MW = ps.load_demand_pu * cfg.P_e_nom_MWe
@@ -134,7 +106,6 @@ def _reset_simulator_state():
     turbine = TurbineModel(cfg)
     ics = ICSystem(cfg=cfg, reactor=reactor, steamgen=steamgen, turbine=turbine)
 
-    # Sync initial state
     ps.T_hot_K = reactor.T_hot_leg
     ps.P_core_MW = reactor.P_pu * cfg.P_core_nom_MWt
     ps.rod_pos_pu = reactor.x
@@ -156,25 +127,20 @@ def _reset_simulator_state():
         _plot_slots[i] = None
         _clear_plot(i)
 
-
-# ── Conversions ─────────────────────────────────────────────────────────────
+# Conversions
 def K_to_F(K: float) -> float:
     return (K - 273.15) * 9.0 / 5.0 + 32.0
-
 
 def Pa_to_psig(Pa: float) -> float:
     return Pa / 6894.76 - 14.696
 
-
 def kg_s_to_lbm_hr(kg_s: float) -> float:
     return kg_s * 7936.64
 
-
-# ── Display widget factory ──────────────────────────────────────────────
+# Display widgets
 DISPLAY_UNITS = {}
 
 def _toggle_plot(key: str):
-    """Toggle a parameter into/out of the plot grid (up to 4 slots)."""
     global _plot_slots
     # If already plotted, remove it
     for i, slot_key in enumerate(_plot_slots):
@@ -189,7 +155,7 @@ def _toggle_plot(key: str):
             _plot_slots[i] = key
             _update_plot_highlight(key, True)
             return
-    # All 4 slots full — replace the oldest (slot 0), shift others down
+    # All 4 slots full - replace the oldest (slot 0), shift others down
     old_key = _plot_slots[0]
     if old_key:
         _update_plot_highlight(old_key, False)
@@ -204,7 +170,6 @@ def _toggle_plot(key: str):
             _clear_plot(i)
 
 def _update_plot_highlight(key: str, active: bool):
-    """Add/remove visual highlight on a display-box to show it's being plotted."""
     if key not in _all_display_labels:
         return
     lbl = _all_display_labels[key]
@@ -214,7 +179,6 @@ def _update_plot_highlight(key: str, active: bool):
         lbl.style("box-shadow: none; border-color: var(--accent-yellow);")
 
 def _clear_plot(slot_idx: int):
-    """Clear a plot slot to the empty state."""
     chart = _plot_charts[slot_idx]
     header = _plot_headers[slot_idx]
     if header:
@@ -229,28 +193,23 @@ def _clear_plot(slot_idx: int):
 _all_display_labels: dict = {}
 
 def _display(label_text: str, key: str, unit: str, labels: dict):
-    """Create a labeled display readout. Clicking toggles trending plot."""
     DISPLAY_UNITS[key] = unit or ""
     with ui.column().classes("items-center gap-0"):
         ui.label(label_text).classes("display-label")
         lbl = ui.label("---").classes("display-box")
-        # Make it clickable if it's a plottable parameter
         if key in PLOTTABLE_PARAMS:
             lbl.style("cursor: pointer;")
             lbl.on("click", lambda k=key: _toggle_plot(k))
         labels[key] = lbl
         _all_display_labels[key] = lbl
 
-
-# ── Rod step movement system ────────────────────────────────────────────
+# Rod step movement system
 _rod_step_size_pct = 5.0        # default step size in %
 _rod_step_target = None         # target rod position (pu) or None if idle
 _rod_step_direction = 0.0       # +1 insert, -1 withdraw
 _ROD_SPEED_PU_PER_S = 0.02      # faster visible rod motion for manual steps
-# ── NiceGUI slider event compatibility helper ───────────────────────────
+
 def _event_value(e):
-    """Compatibility: NiceGUI slider events can be raw numbers, dicts, or EventArguments with args/value."""
-    # raw value
     if isinstance(e, (int, float)):
         return float(e)
     if isinstance(e, str):
@@ -259,14 +218,13 @@ def _event_value(e):
         except Exception:
             return None
 
-    # dict payload (some versions)
     if isinstance(e, dict):
         if 'value' in e:
             try:
                 return float(e['value'])
             except Exception:
                 return None
-        # sometimes nested
+
         if 'args' in e:
             a = e['args']
             if isinstance(a, (list, tuple)) and len(a) > 0:
@@ -275,7 +233,6 @@ def _event_value(e):
                 except Exception:
                     return None
 
-    # EventArguments style
     if hasattr(e, 'value'):
         try:
             return float(getattr(e, 'value'))
@@ -284,28 +241,25 @@ def _event_value(e):
 
     if hasattr(e, 'args'):
         a = getattr(e, 'args')
-        # common: args is a dict with 'value'
         if isinstance(a, dict) and 'value' in a:
             try:
                 return float(a['value'])
             except Exception:
                 return None
-        # common: args is a list like [new_value]
+
         if isinstance(a, (list, tuple)) and len(a) > 0:
             try:
                 return float(a[0])
             except Exception:
                 return None
-        # sometimes args is the raw value
+
         if isinstance(a, (int, float)):
             return float(a)
 
     return None
 
-# Store labels ref for status updates from callbacks
 _rod_labels_ref = None
-_rod_mode_label = None  # set during page build
-
+_rod_mode_label = None
 
 def _set_rod_step_size(val):
     global _rod_step_size_pct
@@ -314,13 +268,11 @@ def _set_rod_step_size(val):
     if _rod_labels_ref and "step_size_disp" in _rod_labels_ref:
         _rod_labels_ref["step_size_disp"].text = f"{_rod_step_size_pct:.1f}%"
 
-
 def _set_rod_mode(mode: str):
     global ps, _rod_mode_label
     ps.rod_mode = mode
     if _rod_mode_label is not None:
         _rod_mode_label.text = f"Mode: {mode.upper()}"
-
 
 def _rod_step_insert():
     global ps, _rod_step_target, _rod_step_direction
@@ -333,7 +285,6 @@ def _rod_step_insert():
     if _rod_labels_ref and "rod_move_status" in _rod_labels_ref:
         _rod_labels_ref["rod_move_status"].text = f"Inserting to {_rod_step_target*100:.1f}%"
 
-
 def _rod_step_withdraw():
     global ps, _rod_step_target, _rod_step_direction
     if ps.rod_mode != "manual":
@@ -345,9 +296,7 @@ def _rod_step_withdraw():
     if _rod_labels_ref and "rod_move_status" in _rod_labels_ref:
         _rod_labels_ref["rod_move_status"].text = f"Withdrawing to {_rod_step_target*100:.1f}%"
 
-
 def _check_rod_step_complete():
-    """Called each tick to stop rod motion when target is reached."""
     global ps, _rod_step_target, _rod_step_direction
     if _rod_step_target is None:
         return
@@ -362,18 +311,15 @@ def _check_rod_step_complete():
         if _rod_labels_ref and "rod_move_status" in _rod_labels_ref:
             _rod_labels_ref["rod_move_status"].text = "Complete"
 
-
-# ── Load demand step system ─────────────────────────────────────────────
+# Load demand step system
 _load_step_size_pct = 1.0
 _load_labels_ref = None
-
 
 def _set_load_step_size(val):
     global _load_step_size_pct
     _load_step_size_pct = float(val) if val is not None else 1.0
     if _load_labels_ref and "load_step_disp" in _load_labels_ref:
         _load_labels_ref["load_step_disp"].text = f"{_load_step_size_pct:.1f}%"
-
 
 def _load_raise():
     global ps
@@ -383,7 +329,6 @@ def _load_raise():
         _load_labels_ref["load_disp"].text = f"{new_load * 100:.1f}%"
         _load_labels_ref["load_status"].text = f"Raised to {new_load * 100:.1f}%"
 
-
 def _load_lower():
     global ps
     new_load = max(0.20, ps.load_demand_pu - _load_step_size_pct / 100.0)
@@ -392,7 +337,6 @@ def _load_lower():
         _load_labels_ref["load_disp"].text = f"{new_load * 100:.1f}%"
         _load_labels_ref["load_status"].text = f"Lowered to {new_load * 100:.1f}%"
 
-
 def _set_speed(val):
     global sim_speed
     try:
@@ -400,21 +344,20 @@ def _set_speed(val):
     except Exception:
         sim_speed = 10
 
-
-# ── Simulation tick ─────────────────────────────────────────────────────
+# Simulation tick
 def _tick(labels: dict):
     global ps, _last_ui_update_wall_s
 
     if not sim_running:
         return
 
-    # 1) Advance physics as fast as requested (sim_speed steps per GUI tick)
+    # 1) Advance as fast as requested (sim_speed steps per GUI tick)
     for _ in range(sim_speed):
         _check_rod_step_complete()
         ps = ics.step(ps, dt)
         ps = ps.copy_advance_time(dt)
 
-    # 2) Record trend data for actively plotted parameters (cheap)
+    # 2) Record trend data for actively plotted parameters
     t_now = ps.t_s
     for key in _plot_slots:
         if key is not None and key in PLOTTABLE_PARAMS:
@@ -423,14 +366,13 @@ def _tick(labels: dict):
             except Exception:
                 pass
 
-    # 3) Throttle GUI redraw to a steady rate so the UI doesn't stutter/skips
+    # 3) Attempt to throttle GUI redraw to a steady rate so the UI doesn't skip
     now_wall = time.monotonic()
     if (now_wall - _last_ui_update_wall_s) < _UI_REFRESH_DT:
         return
     _last_ui_update_wall_s = now_wall
 
     _update_displays(labels)
-
 
 def _update_displays(labels: dict):
     labels["sim_time"].text = f"T = {ps.t_s:.1f} s"
@@ -441,7 +383,7 @@ def _update_displays(labels: dict):
 
     # Reactor core
     set_box("core_mw", f"{ps.P_core_MW:.0f}")
-    # Rod insertion percentage (original convention)
+    # Rod insertion percentage
     set_box("rod_pct", f"{ps.rod_pos_pu * 100:.0f}")
     set_box("tavg_f", f"{K_to_F(ps.Tavg_K):.0f}")
 
@@ -449,28 +391,6 @@ def _update_displays(labels: dict):
     pzr_level_pct = getattr(ps, "pzr_level_m", 0.0) / 16.27 * 100
     set_box("pzr_level", f"{pzr_level_pct:.0f}")
     set_box("pzr_psig", f"{Pa_to_psig(ps.P_pzr_Pa):.0f}")
-
-    # Hot / Cold legs
-    set_box("thot_f", f"{K_to_F(ps.T_hot_K):.0f}")
-    set_box("tcold_f", f"{K_to_F(ps.T_cold_K):.0f}")
-
-    # Steam generator
-    steam_flow_mlb_hr = kg_s_to_lbm_hr(ps.m_dot_steam_kg_s) / 1_000_000.0
-    set_box("steam_flow", f"{steam_flow_mlb_hr:.2f}")
-    set_box("psec_psia", f"{Pa_to_psig(ps.P_secondary_Pa):.0f}")
-    set_box("tsteam_f", f"{K_to_F(ps.T_sec_K):.0f}")
-
-    # Turbine
-    set_box("turb_mw", f"{ps.P_turbine_MW:.0f}")
-
-    # Load
-    labels["load_disp"].text = f"{ps.load_demand_pu * 100:.1f}%"
-
-    # Diagnostics
-    set_box("rho_dk", f"{ps.rho_reactivity_dk:.5f}")
-    set_box("sg_lim", "YES" if ps.sg_power_limited else "NO")
-
-    # --- Pressurizer enhanced displays ---
 
     # Color-coded pressure: green=deadband, yellow=heaters, cyan=spray, red=near PORV
     pzr_p_mpa = ps.P_pzr_Pa / 1.0e6
@@ -486,7 +406,7 @@ def _update_displays(labels: dict):
         p_color = "#00E676"
     labels["pzr_psig"].style(f"color: {p_color}; border-color: {p_color};")
 
-    # Heater bar gauge + kW readout
+    # Heater bar gauge + kW display
     heater_pct = ps.pzr_heater_frac * 100.0
     heater_kw = ps.pzr_heater_kW
     ui.run_javascript(
@@ -494,7 +414,7 @@ def _update_displays(labels: dict):
         f'(document.getElementById("pzr_heater_bar").style.width = "{heater_pct:.1f}%");'
     )
     labels["pzr_htr_kw"].text = f"{heater_kw:.0f} kW"
-    # Dim the kW readout when heater is off
+    # Dim the kW display when heater is off
     if heater_kw < 1.0:
         labels["pzr_htr_kw"].style("color: #555;")
     else:
@@ -525,27 +445,43 @@ def _update_displays(labels: dict):
         labels["pzr_surge"].text = "— NEUTRAL —"
         labels["pzr_surge"].style("color: #90A4AE; font-size: 0.7rem; font-family: Orbitron; font-weight: 700;")
 
+    # Hot / Cold legs
+    set_box("thot_f", f"{K_to_F(ps.T_hot_K):.0f}")
+    set_box("tcold_f", f"{K_to_F(ps.T_cold_K):.0f}")
+
+    # Steam generator
+    steam_flow_mlb_hr = kg_s_to_lbm_hr(ps.m_dot_steam_kg_s) / 1_000_000.0
+    set_box("steam_flow", f"{steam_flow_mlb_hr:.2f}")
+    set_box("psec_psia", f"{Pa_to_psig(ps.P_secondary_Pa):.0f}")
+    set_box("tsteam_f", f"{K_to_F(ps.T_sec_K):.0f}")
+
+    # Turbine
+    set_box("turb_mw", f"{ps.P_turbine_MW:.0f}")
+
+    # Load
+    labels["load_disp"].text = f"{ps.load_demand_pu * 100:.1f}%"
+
+    # Diagnostics
+    set_box("rho_dk", f"{ps.rho_reactivity_dk:.5f}")
+    set_box("sg_lim", "YES" if ps.sg_power_limited else "NO")
+
     # Rod mode
     labels["rod_mode_disp"].text = f"Mode: {ps.rod_mode.upper()}"
 
-    # --- SVG animation updates ---
-    # These JS calls are relatively expensive; `_tick` already throttles redraws,
-    # so we keep them here (only called on redraw).
+    # SVG animation updates
     ui.run_javascript(f"window.pwrSetRod && window.pwrSetRod({ps.rod_pos_pu});")
     ui.run_javascript(f"window.pwrSetPumpsRunning && window.pwrSetPumpsRunning({str(sim_running).lower()});")
 
-    # --- Update trend plots ---
+    # Update trend plots
     _update_trend_plots()
 
 _trend_update_counter = 0
-_TREND_UPDATE_INTERVAL = 6  # only update charts every Nth display tick (lighter for slower machines)
+_TREND_UPDATE_INTERVAL = 6
 
 def _update_trend_plots():
-    """Push latest ring-buffer data into the active EChart slots (throttled)."""
     global _trend_update_counter
     _trend_update_counter += 1
     if _trend_update_counter % _TREND_UPDATE_INTERVAL != 0:
-        # Still update the current-value overlay every tick (cheap)
         for i in range(4):
             key = _plot_slots[i]
             chart = _plot_charts[i]
@@ -573,7 +509,6 @@ def _update_trend_plots():
             chart.update()
         return
 
-    # Full chart data update (every Nth tick)
     for i in range(4):
         key = _plot_slots[i]
         chart = _plot_charts[i]
@@ -591,7 +526,6 @@ def _update_trend_plots():
         if not buf or len(buf) == 0:
             continue
 
-        # Downsample in-place: step through the deque without copying
         n = len(buf)
         step = max(1, n // 150)
         times = []
@@ -600,8 +534,8 @@ def _update_trend_plots():
             t_val, y_val = buf[j]
             times.append(f"{t_val:.0f}")
             vals.append(round(y_val, 3))
-        # Always include latest point
         last_t, last_v = buf[-1]
+
         if not times or times[-1] != f"{last_t:.0f}":
             times.append(f"{last_t:.0f}")
             vals.append(round(last_v, 3))
@@ -637,10 +571,9 @@ def _update_trend_plots():
         chart.update()
 
 
-# ── Build UI ────────────────────────────────────────────────────────────
+# Build UI
 @ui.page("/")
 def main_page():
-    # ── CSS ──────────────────────────────────────────────────────────
     ui.add_head_html("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
@@ -807,7 +740,7 @@ def main_page():
 
     labels = {}
 
-    # ── HEADER BAR ───────────────────────────────────────────────────
+    # HEADER BAR
     with ui.row().classes("header-bar w-full items-center justify-between"):
         ui.label("AP1000 PWR SIMULATOR").style(
             "font-family: Orbitron; font-weight: 900; font-size: 1.3rem; color: white; letter-spacing: 3px;"
@@ -815,17 +748,16 @@ def main_page():
         with ui.row().classes("items-center gap-4"):
             ui.label("")
 
-    # ── MAIN LAYOUT ───────────────────────────────────────────────────
+    # MAIN LAYOUT
     from pathlib import Path
 
-    # ── MAIN LAYOUT ───────────────────────────────────────────────────
     with ui.row().classes("w-full p-4 gap-4 items-start flex-wrap"):
 
         # LEFT SIDE: 4 unit cards + diagnostics stacked under them
         with ui.column().classes("gap-4").style("flex: 0 0 auto; width: 820px;"):
 
-            UNIT_COL_H = "440px"  # keep the 4 left columns the same height (tall enough to contain all readouts)
-            UNIT_MIN_W = "180px"  # allow 4 columns to fit comfortably within 820px
+            UNIT_COL_H = "440px"
+            UNIT_MIN_W = "180px"
 
             # Top row: the 4 unit cards (columns 1–4)
             with ui.row().classes("gap-4 flex-wrap").style("width: 820px;"):
@@ -841,7 +773,7 @@ def main_page():
                     ui.label("REACTIVITY").classes("component-title")
                     _display("Δk/k", "rho_dk", "", labels)
 
-                # COLUMN 2: PRESSURIZER (single card, fixed height)
+                # COLUMN 2: PRESSURIZER
                 with ui.column().classes("component-card items-center gap-2").style(f"height: {UNIT_COL_H}; flex: 1 1 {UNIT_MIN_W}; min-width: {UNIT_MIN_W};"):
                     ui.label("PRESSURIZER").classes("component-title")
                     _display("LEVEL", "pzr_level", "%", labels)
@@ -849,12 +781,12 @@ def main_page():
 
                     ui.separator().style("background: rgba(255,255,255,0.1); margin: 6px 0 4px 0;")
 
-                    # --- Heater bar gauge + kW readout ---
+                    # Heater bar gauge + kW display
                     ui.label("HEATER OUTPUT").style(
                         "font-family: Orbitron; font-size: 0.55rem; font-weight: 700; "
                         "color: var(--accent-yellow); letter-spacing: 1.4px; text-align: center;"
                     )
-                    # Bar gauge container
+                    # Bar gauge
                     html("""
                     <div style="width: 130px; height: 16px; background: #222; border: 1px solid #555;
                                 border-radius: 3px; overflow: hidden; position: relative;">
@@ -869,7 +801,7 @@ def main_page():
 
                     ui.separator().style("background: rgba(255,255,255,0.1); margin: 4px 0;")
 
-                    # --- Spray active indicator with shower icon ---
+                    # Spray active indicator with shower icon
                     with ui.row().classes("items-center justify-center gap-2"):
                         ui.label("SPRAY").style(
                             "font-family: Orbitron; font-size: 0.55rem; font-weight: 700; "
@@ -895,7 +827,7 @@ def main_page():
 
                     ui.separator().style("background: rgba(255,255,255,0.1); margin: 4px 0;")
 
-                    # --- Surge direction indicator ---
+                    # Surge direction indicator
                     ui.label("SURGE").style(
                         "font-family: Orbitron; font-size: 0.55rem; font-weight: 700; "
                         "color: var(--accent-yellow); letter-spacing: 1.4px; text-align: center;"
@@ -909,7 +841,7 @@ def main_page():
                 with ui.column().classes("component-card items-center gap-2").style(f"height: {UNIT_COL_H}; flex: 1 1 {UNIT_MIN_W}; min-width: {UNIT_MIN_W};"):
                     ui.label("STEAM GENERATOR").classes("component-title")
                     _display("STEAM FLOW", "steam_flow", "Mlb/hr", labels)
-                    #html(""" ... your SG svg ... """)
+
                     with ui.row().classes("gap-6 justify-center w-full"):
                         _display("SECONDARY PRESSURE", "psec_psia", "psig", labels)
                         _display("STEAM TEMPERATURE", "tsteam_f", "°F", labels)
@@ -917,16 +849,15 @@ def main_page():
                     ui.label("SG LIMITED").classes("component-title")
                     _display("STATUS", "sg_lim", "", labels)
 
-                # COLUMN 4: TURBINE + TEMPERATURES (fixed total height; equal card widths)
+                # COLUMN 4: TURBINE + TEMPERATURES
                 with ui.column().classes("gap-3").style(f"height: {UNIT_COL_H}; flex: 1 1 {UNIT_MIN_W}; min-width: {UNIT_MIN_W};"):
 
-                    # Turbine card (fills upper half)
+                    # Turbine card
                     with ui.column().classes("component-card items-center w-full").style("flex: 1;"):
                         ui.label("TURBINE").classes("component-title")
-                        #html(""" ... your turbine svg ... """)
                         _display("TURBINE POWER", "turb_mw", "MW", labels)
 
-                    # Temperatures card (fills lower half)
+                    # Temperatures card
                     with ui.column().classes("component-card items-center justify-between w-full").style("flex: 1;"):
                         ui.label("TEMPERATURES").classes("component-title")
                         _display("HOT LEG", "thot_f", "°F", labels)
@@ -934,10 +865,10 @@ def main_page():
                         html('<div class="pipe-cold" style="width: 120px;"></div>')
                         _display("COLD LEG", "tcold_f", "°F", labels)
 
-            # ── CONTROL PANEL (moved under the 4 unit columns) ─────────────
+            # CONTROL PANEL
             with ui.row().classes("gap-4 flex-wrap items-start").style("width: 820px;"):
 
-                CTRL_MIN_W = "215px"  # allow 3 cards to fit comfortably within 820px
+                CTRL_MIN_W = "215px"
 
                 # Simulation controls
                 with ui.column().classes("component-card").style(f"flex: 1 1 {CTRL_MIN_W}; min-width: {CTRL_MIN_W};"):
@@ -949,7 +880,7 @@ def main_page():
                     def _start_sim():
                         global sim_running, _last_ui_update_wall_s
                         sim_running = True
-                        _last_ui_update_wall_s = 0.0  # force immediate redraw
+                        _last_ui_update_wall_s = 0.0
                         timer.active = True
                         labels["sim_status"].text = "RUNNING"
                         labels["sim_status"].style("color: #00E676; border-color: #00E676;")
@@ -1009,7 +940,7 @@ def main_page():
                     labels["step_size_disp"] = ui.label(f"{_rod_step_size_pct:.1f}%").style(
                         "color: #FFD600; font-family: Orbitron; font-size: 0.7rem; text-align: center;"
                     )
-                    # force initial sync (and ensures label updates even if events behave differently)
+
                     _set_rod_step_size(_rod_step_size_pct)
 
                     with ui.row().classes("gap-3 mt-1"):
@@ -1054,7 +985,6 @@ def main_page():
 
                 svg_path = Path(__file__).with_name("pwr_diagram.svg")
                 if svg_path.exists():
-                    # Constrain the diagram area and scale the SVG to fit without requiring browser zoom-out
                     html(f"""
                     <div id=\"diagram_box\" style=\"
                         width: 100%;
@@ -1072,7 +1002,6 @@ def main_page():
                 else:
                     ui.label(f"Missing {svg_path.name} (put it next to gui_app.py)").style("color: #FF1744;")
 
-            # Ensure the embedded SVG uses a "contain"-style fit and crops internal padding
             ui.timer(0.1, lambda: ui.run_javascript("""
               const svg = document.querySelector('#pwr_svg_wrap svg');
               if (!svg) return;
@@ -1108,7 +1037,7 @@ def main_page():
               svg.style.transform = 'none';
             """), once=True)
 
-            # Define SVG control functions once
+            # Define SVG control functions
             ui.timer(0.2, lambda: ui.run_javascript(r"""
               // --- AP1000 SVG hooks (requires IDs in the SVG) ---
               // Expected IDs: rod_group, pump_cold_leg, pump_hot_leg
@@ -1174,7 +1103,7 @@ def main_page():
               };
             """), once=True)
 
-            # ── 2×2 TREND PLOT GRID ──────────────────────────────────────
+            # 2×2 TREND PLOT GRID
             with ui.column().classes("component-card").style("width: 100%; margin-top: 8px;"):
                 with ui.row().classes("items-center justify-between w-full"):
                     ui.label("TREND PLOTS").classes("component-title")
@@ -1224,7 +1153,7 @@ def main_page():
 
 
 
-    # ── Timer for periodic updates ───────────────────────────────────
+    # Timer for periodic updates
     timer = ui.timer(0.08, lambda: _tick(labels), active=False)
 
     # Save label refs for callbacks
@@ -1236,6 +1165,5 @@ def main_page():
     _update_displays(labels)
 
 
-# ── Launch ──────────────────────────────────────────────────────────────
+# Launch
 ui.run(title="AP1000 Simulator", port=8080, reload=False)
-

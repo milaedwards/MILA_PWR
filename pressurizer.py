@@ -1,31 +1,16 @@
-# pressurizer.py  –  AP1000 lumped pressurizer (NO CoolProp)
-#
-# Every PropsSI call has been replaced with:
-#   • Wagner correlation   → T_sat(P), P_sat(T)       (< 1 K error 0.1-22 MPa)
-#   • NIST saturation table + linear interp → rho_l, rho_v, h_l, h_v, cp_l
-#   • Subcooled liquid: rho ≈ rho_l(P), h ≈ h_l(P) + cp_l*(T-T_sat)
-#
-# The physics, control bands, surge/flash/spray logic are IDENTICAL to the
-# original CoolProp version.  Only the property look-up layer changed.
-
 import math
 import bisect
 from config import Config as cfg
 
-# ================================================================
-# Water-property helper layer  (module-level, stateless)
-# ================================================================
-
-# --- Wagner saturation correlation constants (IAPWS) ---
-_Tc  = 647.096   # K   critical temperature
-_Pc  = 22.064e6  # Pa  critical pressure
+# Wagner saturation correlation constants (IAPWS)
+_Tc = 647.096   # [K]   critical temperature
+_Pc = 22.064e6  # [Pa]  critical pressure
 _A1, _A2, _A3, _A4 = -7.85951783, 1.84408259, -11.7866497, 22.6807411
-_A5, _A6           =  -15.9618719,  1.80122502
+_A5, _A6 =  -15.9618719,  1.80122502
 
 def _P_sat(T_K: float) -> float:
-    """Saturation pressure [Pa] from temperature [K] (Wagner)."""
     if T_K <= 273.15:
-        return 611.657          # triple point
+        return 611.657
     if T_K >= _Tc:
         return _Pc
     tau = 1.0 - T_K / _Tc
@@ -37,7 +22,6 @@ def _P_sat(T_K: float) -> float:
     return _Pc * math.exp(ln_Pr)
 
 def _T_sat(P_Pa: float) -> float:
-    """Saturation temperature [K] from pressure [Pa] (bisection on Wagner)."""
     if P_Pa <= 611.657:
         return 273.15
     if P_Pa >= _Pc:
@@ -51,7 +35,7 @@ def _T_sat(P_Pa: float) -> float:
             hi = mid
     return 0.5 * (lo + hi)
 
-# --- NIST saturation table (pressure-indexed) ---
+# NIST saturation table (pressure-indexed)
 # Columns: (P_MPa, T_K, rho_l, rho_v, h_l, h_v, cp_l, s_l, s_v)
 _SAT = [
     ( 0.10,  372.76,  958.4,    0.5978,  417.5e3,  2675.0e3,  4217, 1302.8,  7359.4),
@@ -73,7 +57,6 @@ _SAT = [
 _SAT_P_Pa = [row[0] * 1e6 for row in _SAT]
 
 def _sat_interp(P_Pa: float, col: int) -> float:
-    """Linear interp on NIST sat table. col: 2=rho_l 3=rho_v 4=h_l 5=h_v 6=cp_l 7=s_l 8=s_v"""
     if P_Pa <= _SAT_P_Pa[0]:
         return _SAT[0][col]
     if P_Pa >= _SAT_P_Pa[-1]:
@@ -91,25 +74,12 @@ def _h_v(P_Pa: float) -> float:    return _sat_interp(P_Pa, 5)
 def _cp_l(P_Pa: float) -> float:   return _sat_interp(P_Pa, 6)
 
 def _rho_subcooled(T_K: float, P_Pa: float) -> float:
-    """Subcooled density ≈ rho_l at P (weak P-dependence below dome)."""
     return _rho_l(P_Pa)
 
 def _h_subcooled(T_K: float, P_Pa: float) -> float:
-    """Subcooled enthalpy ≈ h_l(P) + cp_l(P)·(T - T_sat(P))."""
     return _h_l(P_Pa) + _cp_l(P_Pa) * (T_K - _T_sat(P_Pa))
 
-
-# ================================================================
-# PressurizerModel
-# ================================================================
 class PressurizerModel:
-    """
-    Lumped AP1000 pressurizer model.
-
-    Heater band:  15.30 – 15.51 MPa
-    Spray band:   15.58 – 15.92 MPa   (deadband 15.51–15.58)
-    """
-
     def __init__(self):
         # Geometry
         self.pzr_volume         = 59.47
@@ -118,14 +88,14 @@ class PressurizerModel:
         self.pzr_area           = math.pi * (self.pzr_inner_diameter / 2.0) ** 2
 
         # Hardware
-        self.HEATER_POWER    = 1.6e6   # W
-        self.SPRAY_FLOW_RATE = 44.1    # kg/s
-        self.RELIEF_SETPOINT = 17.1e6  # Pa
-        self.surge_deadband_K = 0.005  # [K] per-step noise filter (was 0.5, too large for dt=0.1s)
+        self.HEATER_POWER    = 1.6e6   # [W]
+        self.SPRAY_FLOW_RATE = 44.1    # [kg/s]
+        self.RELIEF_SETPOINT = 17.1e6  # [Pa]
+        self.surge_deadband_K = 0.005  # [K] per-step noise filter
 
         # Control gains
-        self.K_SURGE = 50.0  #************************CHANGED FROM 1.5***************************************************
-        self.K_P0    = 5.0e3  #****************************CHANGED FROM 50000**************************************************
+        self.K_SURGE = 50.0
+        self.K_P0    = 5.0e3
 
         # Nominal reference
         self.Tavg_nom = 0.5 * (cfg.T_hot_nom_K + cfg.T_cold_nom_K)
@@ -134,11 +104,11 @@ class PressurizerModel:
         # Spray source temperature
         self.SPRAY_TEMP = cfg.T_cold_nom_K
 
-        # Initial conditions — consistent with relax_surge_inventory target (50% level)
+        # Initial conditions
         self.pressure = self.P_nom
         self.T_sat    = _T_sat(self.pressure)
 
-        level_init = 0.5 * self.pzr_height        # same target as relax_surge_inventory
+        level_init = 0.5 * self.pzr_height
         self.V_liq = level_init * self.pzr_area
         self.V_vap = self.pzr_volume - self.V_liq
 
@@ -167,21 +137,19 @@ class PressurizerModel:
 
         # Heater smoothing
         self.P_SETPOINT = 15.50e6
-        self.HEATER_LAG_TAU = 10.0 # seconds (thermal inertia)
+        self.HEATER_LAG_TAU = 10.0 # [s] (thermal inertia)
         self.heater_frac = 0.0 # 0–1 actual applied heater power
 
         self.dP0 = 0.0
         self.tau_dP0 = 300.0   # [s] rate-limit for pressure setpoint shift
         self.T_hot_prev = None
 
-        self.surge_equilibrium_offset_K = 30.0  # *********************CHANGED FROM 25************************
+        self.surge_equilibrium_offset_K = 30.0
 
         # Exposed state for GUI
         self.surge_direction = "NEUTRAL"  # "IN-SURGE", "OUT-SURGE", or "NEUTRAL"
 
-    # ----------------------------------------------------------
     # Control
-    # ----------------------------------------------------------
     def evaluate_control(self, T_hot, T_cold):
         T_avg = 0.5 * (T_hot + T_cold)
         self.t_avg = T_avg
@@ -189,12 +157,12 @@ class PressurizerModel:
         dP0_target = self.K_P0 * (T_avg - self.Tavg_nom)
         dP0_target = max(-self.P0_SHIFT_LIMIT, min(self.P0_SHIFT_LIMIT, dP0_target))
 
-        # Rate-limit the setpoint shift (prevents snap-on oscillation)
+        # Rate-limit the setpoint shift
         self.dP0 += (dP0_target - self.dP0) * self.dt / self.tau_dP0
 
         P_heat_on   = self.P_HEAT_ON   + self.dP0
         P_heat_off  = self.P_HEAT_OFF  + self.dP0
-        # Spray bands are NOT shifted — spray should never activate
+        # Spray bands are NOT shifted - spray should never activate
         # during a cooldown transient when dP0 is negative
         P_spray_on  = self.P_SPRAY_ON
         P_spray_off = self.P_SPRAY_OFF
@@ -225,9 +193,7 @@ class PressurizerModel:
         self.last_spray  = spray
         return heater, spray
 
-    # ----------------------------------------------------------
     # Liquid energy
-    # ----------------------------------------------------------
     def add_liquid_energy(self, Q):
         if self.m_l <= 0.0:
             return
@@ -236,9 +202,7 @@ class PressurizerModel:
         self.T_liq = min(self.T_liq, T_sat)
         self.T_liq += Q / (self.m_l * cp)
 
-    # ----------------------------------------------------------
     # Surge
-    # ----------------------------------------------------------
     def apply_surge(self, T_hot, dt):
         # Initialize reference on first call → no startup transient
         if self.T_hot_prev is None:
@@ -249,12 +213,12 @@ class PressurizerModel:
         dT_hot = T_hot - self.T_hot_prev
         self.T_hot_prev = T_hot
 
-        # Only respond to *changes* in hot-leg temperature
+        # Only respond to changes in hot-leg temperature
         if abs(dT_hot) < self.surge_deadband_K:
             self.surge_direction = "NEUTRAL"
             return
 
-        dm = self.K_SURGE * dT_hot # * dt
+        dm = self.K_SURGE * dT_hot
         if abs(dm) < 1e-9:
             self.surge_direction = "NEUTRAL"
             return
@@ -268,21 +232,19 @@ class PressurizerModel:
         T_sat = _T_sat(self.pressure)
 
         if dm > 0.0:
-            # Surge INTO pressurizer
+            # Surge into pressurizer
             h_in = _h_l(self.pressure) if T_hot >= T_sat - 1e-3 else _h_subcooled(T_hot, self.pressure)
             h_liq = _h_l(self.pressure) if self.T_liq >= T_sat - 1e-3 else _h_subcooled(self.T_liq, self.pressure)
             self.m_l += dm
             self.add_liquid_energy(dm * (h_in - h_liq))
         else:
-            # Surge OUT of pressurizer
+            # Surge out of pressurizer
             dm_out = min(-dm, 0.9 * self.m_l)
             h_l = _h_l(self.pressure) if self.T_liq >= T_sat - 1e-3 else _h_subcooled(self.T_liq, self.pressure)
             self.m_l -= dm_out
             self.add_liquid_energy(-dm_out * h_l)
 
-    # ----------------------------------------------------------
     # Surge relax
-    # ----------------------------------------------------------
 
     def relax_surge_inventory(self, dt):
         # Slowly restore nominal liquid inventory

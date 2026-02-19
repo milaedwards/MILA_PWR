@@ -8,7 +8,6 @@ from steam_generator import SteamGenerator
 from turbine_condenser import TurbineModel
 from pressurizer import PressurizerModel
 
-
 @dataclass
 class ICSystem:
     cfg: Config = field(default_factory=Config)
@@ -17,35 +16,11 @@ class ICSystem:
     turbine: TurbineModel | None = None
     pressurizer: PressurizerModel | None = None
 
-    # Internal state for "move by Δx" manual rod steps
+    # Internal state for "move by delta x" manual rod steps
     _manual_step_active: bool = False
     _manual_step_target_x: float = 0.0
     _manual_step_dir: float = 0.0
 
-    def __post_init__(self) -> None:
-        # Make sure we actually have a reactor
-        assert self.reactor is not None, "ICSystem.reactor must be provided"
-
-        # Reuse reactor cfg if ICSystem.cfg wasn't set explicitly
-        if self.cfg is None:
-            reactor_cfg = getattr(self.reactor, "cfg", None)
-            self.cfg = reactor_cfg if reactor_cfg is not None else Config()
-
-        # Build SG and turbine if they weren't passed in
-        if self.steamgen is None:
-            self.steamgen = SteamGenerator(self.cfg)
-        if self.turbine is None:
-            self.turbine = TurbineModel(self.cfg)
-
-        if self.pressurizer is None:
-            self.pressurizer = PressurizerModel()
-
-        # Manual-step fields already have dataclass defaults above,
-        # just keep them.
-
-    # ------------------------------------------------------------------
-    # Helpers for manual "step by Δx" rod motion
-    # ------------------------------------------------------------------
     def start_manual_step(self, current_x: float, delta_x: float) -> None:
         self._manual_step_active = True
         self._manual_step_target_x = float(current_x + delta_x)
@@ -65,45 +40,26 @@ class ICSystem:
         # Otherwise, keep commanding movement in the chosen direction
         return self._manual_step_dir
 
-    # ------------------------------------------------------------------
     # Main step
-    # ------------------------------------------------------------------
     def step(self, ps: PlantState, dt: float) -> PlantState:
-        """
-        Advance the tightly-coupled reactor + SG + turbine system by one time-step.
-        """
         assert self.reactor is not None
         assert self.steamgen is not None
         assert self.turbine is not None
         assert self.pressurizer is not None
 
-        # 1) Advance reactor core
-        #manual_u: Optional[float] = None
-        #if ps.rod_mode == "manual":
-        #    manual_u = self.update_manual_step(ps.rod_pos_pu)
-        #else:
-        #    # If switching back to auto, clear manual step state
-        #    self._manual_step_active = False
-        #    self._manual_step_target_x = 0.0
-        #    self._manual_step_dir = 0.0
-        #    manual_u = None
-
         # manual rod speed command (fraction of stroke per second)
         manual_u: Optional[float] = None
         if ps.rod_mode == "manual":
-            manual_u = float(ps.rod_cmd_manual_pu)  # <-- use user input
+            manual_u = float(ps.rod_cmd_manual_pu)  # use user input
         else:
             manual_u = None
 
-        # Convert measured turbine power [MW] to per-unit based on nominal MWe
-        #P_turb_pu_meas = ps.P_turbine_MW / self.cfg.P_e_nom_MWe
+        P_turb_pu_ref = ps.P_turbine_MW / self.cfg.P_e_nom_MWe
 
-        P_turb_pu_ref = ps.P_turbine_MW / self.cfg.P_e_nom_MWe  #**********************CHANGED FROM ps.load_demand_pu**************
-
+        # 1) Advance reactor core
         T_hot_K, P_core_MWt = self.reactor.step(
             Tc_in=ps.T_cold_K,
             dt=dt,
-            #P_turb=P_turb_pu_meas,
             P_turb = P_turb_pu_ref,
             control_mode=ps.rod_mode,
             manual_u=manual_u,
@@ -121,28 +77,20 @@ class ICSystem:
         )
 
         # 2) Advance steam generator
-        # Debug: what command does the SG see?
-        if ps.t_s < 1.0:
-            print(f"[cmd] t={ps.t_s:.2f} s, m_dot_cmd={ps.m_dot_steam_cmd_kg_s:.1f} kg/s")
         T_cold_K, m_dot_steam_actual_kg_s, P_sec_Pa, T_sec_K, sg_limited, h_steam = self.steamgen.step(
             ps.T_hot_K,
             ps.m_dot_steam_cmd_kg_s,
             dt,
         )
-        # Debug: what flow did the SG actually deliver?
-        if ps.t_s < 1.0:
-            print(f"[SG] delivered m_dot={m_dot_steam_actual_kg_s:.1f} kg/s")
 
         ps = replace(
             ps,
-            # primary loop
             T_cold_K=T_cold_K,
             T_sg_in_K=ps.T_hot_K,
             T_sg_out_K=T_cold_K,
             T_metal_K=self.steamgen.T_metal_K,
             T_sec_K=T_sec_K,
             P_secondary_Pa=P_sec_Pa,
-            # Store the actual steam flow delivered by the SG
             m_dot_steam_kg_s=m_dot_steam_actual_kg_s,
             steam_h_J_kg=h_steam,
             sg_power_limited=bool(sg_limited),
@@ -174,7 +122,6 @@ class ICSystem:
         # 4) Advance turbine generator
         P_dem_MW = ps.load_demand_pu * self.cfg.P_e_nom_MWe
 
-        # Use the actual steam flow from the SG as the turbine inlet flow
         P_turb_MW, m_dot_steam_cmd_new = self.turbine.step(
             inlet_h=ps.steam_h_J_kg,
             inlet_p=ps.P_secondary_Pa,
@@ -190,9 +137,7 @@ class ICSystem:
         ps = replace(
             ps,
             P_turbine_MW=float(P_turb_MW),
-            # Store the newly commanded flow for use on the next SG step
             m_dot_steam_cmd_kg_s=float(m_dot_steam_cmd_new),
         )
 
         return ps.clip_invariants()
-

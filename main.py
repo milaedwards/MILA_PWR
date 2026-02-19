@@ -9,9 +9,7 @@ from steam_generator import SteamGenerator
 from turbine_condenser import TurbineModel
 from ic_system import ICSystem
 
-
 def ask_float(prompt: str, default: float) -> float:
-    """Read a float from input, with a default if the user hits Enter."""
     txt = input(prompt)
     if not txt.strip():
         return default
@@ -36,12 +34,10 @@ def ask_time_seconds(prompt: str, default_s: float) -> float:
         print(f"Invalid input, using default {default_s}")
         return default_s
 
-
 def ask_str(prompt: str, default: str) -> str:
     txt = input(prompt)
     txt = txt.strip().lower()
     return txt if txt else default.lower()
-
 
 def run_sim():
     cfg = Config()
@@ -50,7 +46,7 @@ def run_sim():
     print("AP1000 PLANT SIMULATOR - SCENARIO MODE")
     print("=" * 70)
 
-    # ---- 1. Get control mode -------------------------------------------------
+    # 1) Get control mode
     rod_mode = ask_str(
         "\nRod control mode ('auto' or 'manual'): ",
         "auto",
@@ -59,11 +55,11 @@ def run_sim():
         print("Invalid mode, defaulting to 'auto'")
         rod_mode = "auto"
 
-    # ---- 2. Scenario-specific inputs -----------------------------------------
+    # 2) Scenario-specific inputs
     rod_step_percent = 0.0
     load_cut_mwe = 0.0
-    event_time = 1000.0  # seconds
-    rod_movement_duration = 10.0  # Duration over which rods move (seconds)
+    event_time = 1000.0  # [s]]
+    rod_movement_duration = 10.0  # Duration over which rods move [s]
 
     if rod_mode == "manual":
         print("\n--- MANUAL ROD MOVEMENT SCENARIO ---")
@@ -107,7 +103,7 @@ def run_sim():
         print(f"  Final load: {cfg.P_e_nom_MWe - load_cut_mwe:.1f} MWe")
         print(f"  Event time: {event_time:.0f} seconds")
 
-    # ---- 3. Time controls ----------------------------------------------------
+    # 3) Time controls
     default_t_final = 2000.0  # Default 2000s for scenario runs
     t_final = ask_time_seconds(
         f"\nEnter total simulation time (e.g. 2000, 30m) [default {default_t_final}s]: ",
@@ -131,7 +127,7 @@ def run_sim():
         print(f"Warning: Simulation time ({t_final}s) should be at least {event_time + 500}s")
         print(f"         to see response after event at {event_time}s")
 
-    # ---- 4. Initialize plant objects -----------------------------------------
+    # 4) Initialize plant objects
     ps = PlantState()
 
     # Initial load demand (before any cut)
@@ -141,7 +137,7 @@ def run_sim():
     # Make turbine power consistent with load demand at t=0
     ps.P_turbine_MW = ps.load_demand_pu * cfg.P_e_nom_MWe
 
-    # Optional: make initial steam command consistent too
+    # Mke initial steam command consistent
     ps.m_dot_steam_cmd_kg_s = ps.load_demand_pu * cfg.m_dot_steam_nom_kg_s
 
     ps.rod_mode = rod_mode
@@ -171,19 +167,14 @@ def run_sim():
     turbine = TurbineModel(cfg)
     ics = ICSystem(cfg=cfg, reactor=reactor, steamgen=steamgen, turbine=turbine)
 
-    # ---------------- FIX 1: sync PlantState to subsystem equilibrium BEFORE logging ----------------
-
-    # (Keep turbine power + steam command consistent with initial load)
     ps.P_turbine_MW = ps.load_demand_pu * cfg.P_e_nom_MWe
     ps.m_dot_steam_cmd_kg_s = ps.load_demand_pu * cfg.m_dot_steam_nom_kg_s
 
-    # Reactor-consistent values
     ps.T_hot_K = reactor.T_hot_leg
     ps.P_core_MW = reactor.P_pu * cfg.P_core_nom_MWt
     ps.rod_pos_pu = reactor.x
     ps.rho_reactivity_dk = getattr(reactor, "rho_tot", 0.0)
 
-    # SG-consistent values (optional but helps eliminate cold-leg mismatch)
     Tcold0, m0, Psec0, Tsec0, lim0, h0 = steamgen.step(ps.T_hot_K, ps.m_dot_steam_cmd_kg_s, dt=0.0)
 
     ps.T_cold_K = Tcold0
@@ -195,9 +186,8 @@ def run_sim():
     ps.sg_power_limited = lim0
     ps.steam_h_J_kg = h0
     ps.T_metal_K = steamgen.T_metal_K  # step() sets this internally
-    # -----------------------------------------------------------------------------------------------
 
-    # ---- 5. Allocate histories -----------------------------------------------
+    # 5) Allocate histories
     t_hist = []
     Thot_hist = []
     Tcold_hist = []
@@ -219,7 +209,7 @@ def run_sim():
     pzr_heater_hist = []
     pzr_spray_hist = []
 
-    # ---- 6. Time integration loop --------------------------------------------
+    # 6) Time integration loop
     n_steps = int(math.ceil(t_final / dt))
 
     print(f"Running simulation ({n_steps} steps)...")
@@ -250,7 +240,7 @@ def run_sim():
         pzr_heater_hist.append(ps.pzr_heater_pu)
         pzr_spray_hist.append(ps.pzr_spray_pu)
 
-        # ---- Apply scenario event at t=1000s ---------------------------------
+        # Apply scenario event at t=1000s
         if ps.t_s >= event_time and not event_triggered:
             event_triggered = True
             rod_movement_start_time = ps.t_s
@@ -266,7 +256,7 @@ def run_sim():
                 print(f"  Movement: {rod_step_percent:+.1f}%")
                 print(f"  Duration: {rod_movement_duration:.1f} seconds")
 
-            else:  # auto mode
+            else: # auto mode
                 # Apply load cut
                 new_load_pu = (cfg.P_e_nom_MWe - load_cut_mwe) / cfg.P_e_nom_MWe
                 ps.load_demand_pu = new_load_pu
@@ -275,32 +265,30 @@ def run_sim():
                 print(f"  Load after: {new_load_pu * cfg.P_e_nom_MWe:.1f} MWe")
                 print(f"  Reduction: {load_cut_mwe:.1f} MWe")
 
-        # ---- Check if manual rod movement should stop ------------------------
+        # Check if manual rod movement should stop
         if rod_mode == "manual" and event_triggered:
             elapsed_time = ps.t_s - rod_movement_start_time
 
-            # Stop rod movement after duration OR if target reached
+            # Stop rod movement after duration or if target reached
             if elapsed_time >= rod_movement_duration:
-                if ps.rod_cmd_manual_pu != 0.0:  # Only print once
+                if ps.rod_cmd_manual_pu != 0.0:
                     print(f"\n[t={ps.t_s:.1f}s] ROD MOVEMENT COMPLETE")
                     print(f"  Final position: {ps.rod_pos_pu:.3f} pu ({ps.rod_pos_pu * 100:.1f}%)")
                 ps.rod_cmd_manual_pu = 0.0  # Stop moving
 
-            # Also check if we've reached/exceeded target position
+            # Check if we've reached/exceeded target position
             if rod_step_pu > 0 and ps.rod_pos_pu >= target_rod_position:
-                # Inserting and reached target
                 if ps.rod_cmd_manual_pu != 0.0:
                     print(f"\n[t={ps.t_s:.1f}s] ROD MOVEMENT COMPLETE (target reached)")
                     print(f"  Final position: {ps.rod_pos_pu:.3f} pu ({ps.rod_pos_pu * 100:.1f}%)")
                 ps.rod_cmd_manual_pu = 0.0
             elif rod_step_pu < 0 and ps.rod_pos_pu <= target_rod_position:
-                # Withdrawing and reached target
                 if ps.rod_cmd_manual_pu != 0.0:
                     print(f"\n[t={ps.t_s:.1f}s] ROD MOVEMENT COMPLETE (target reached)")
                     print(f"  Final position: {ps.rod_pos_pu:.3f} pu ({ps.rod_pos_pu * 100:.1f}%)")
                 ps.rod_cmd_manual_pu = 0.0
 
-        # Step the integrated system
+        # Step the system
         ps = ics.step(ps, dt)
 
         # Advance time
@@ -316,7 +304,7 @@ def run_sim():
 
     print(f"\nSimulation complete! (t={ps.t_s:.1f}s)")
 
-    # ---- 7. Convert histories to numpy arrays --------------------------------
+    # 7) Convert histories to numpy arrays
     t = np.array(t_hist)
     Thot = np.array(Thot_hist)
     Tcold = np.array(Tcold_hist)
@@ -328,17 +316,17 @@ def run_sim():
     Pturb = np.array(Pturb_hist)
     rod_pos = np.array(rod_pos_hist)
     rod_cmd = np.array(rod_cmd_hist)
-    load_dem = np.array(load_dem_hist) * cfg.P_e_nom_MWe  # convert pu → MWe
+    load_dem = np.array(load_dem_hist) * cfg.P_e_nom_MWe
     T_sg_in = np.array(T_sg_in_hist)
     T_sg_out = np.array(T_sg_out_hist)
     T_sec = np.array(T_sec_hist)
     T_metal = np.array(T_metal_hist)
-    reactivity_pcm = np.array(reactivity_hist) * 1.0e5  # dk/k → pcm
+    reactivity_pcm = np.array(reactivity_hist) * 1.0e5
     pzr_level = np.array(pzr_level_hist)
     pzr_heater = np.array(pzr_heater_hist)
     pzr_spray = np.array(pzr_spray_hist)
 
-    # ---- 8. Plotting (3×3 grid) ----------------------------------------------
+    # 8) Plotting (3×3 grid)
     print("\nGenerating plots...")
     fig, axes = plt.subplots(3, 3, figsize=(16, 12))
 
@@ -371,7 +359,7 @@ def run_sim():
 
     pad = 0.05 * (p_mpa.max() - p_mpa.min())
     if pad == 0:
-        pad = 0.1  # fallback if perfectly flat
+        pad = 0.1
     ax.set_ylim(p_mpa.min() - pad, p_mpa.max() + pad)
 
     ax.axvline(event_time, color='red', linestyle='--', alpha=0.5, label='Event')
@@ -470,7 +458,6 @@ def run_sim():
     plt.show()
 
     print("\nSimulation finished successfully!")
-
 
 if __name__ == "__main__":
     run_sim()

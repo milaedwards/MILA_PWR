@@ -1,21 +1,3 @@
-# steam_generator.py
-# AP1000 Delta-125 Steam Generator model (LEVEL 3)
-#
-# LEVEL 3 features:
-#   - NO CoolProp, simple algebraic thermodynamics (Level 1)
-#   - Two SG loops (Loop A / Loop B) algebraic split (Level 2)
-#   - Bounded secondary pressure dynamics (Level 3):
-#       P_sec_cmd = P_nom - Kp * (m_cmd_total - m_actual_total)
-#       clamp P_sec_cmd within +/- dP_max
-#       dP/dt = (P_sec_cmd - P_sec) / tau_P
-#
-# What this gives you:
-#   - Steam flow is driven by turbine demand but limited by available primary heat
-#   - Secondary pressure moves sensibly with steam mismatch without runaway
-#
-# Units:
-#   T [K], P [Pa], m_dot [kg/s], h [J/kg], Q_dot [W], dt [s]
-
 from dataclasses import dataclass, field
 import math
 from config import Config
@@ -25,20 +7,20 @@ class SteamGenerator:
     cfg: Config
 
     # Secondary header states
-    P_sec_Pa: float = field(init=False)  # [Pa] dynamic (Level 3)
+    P_sec_Pa: float = field(init=False)  # [Pa] dynamic
     T_sec_K: float = field(init=False)   # [K] fixed unless sg_dT_dP_K_per_Pa used
 
     # Legacy / compatibility attributes
     T_metal_K: float = field(init=False)        # [K] placeholder
     m_dot_steam_kg_s: float = field(init=False) # [kg/s]
 
-    # Optional debug visibility (not required by ICSystem)
+    # Debug (not required by ICSystem)
     m_dot_steam_A_kg_s: float = field(init=False)  # [kg/s]
     m_dot_steam_B_kg_s: float = field(init=False)  # [kg/s]
     T_cold_A_K: float = field(init=False)          # [K]
     T_cold_B_K: float = field(init=False)          # [K]
     
-    # Internal valve mapping diagnostics (OPTION A)
+    # Internal valve mapping diagnostics
     steam_valve_u: float = field(init=False)        # [-] internal valve signal 0..1
     m_dot_valve_kg_s: float = field(init=False)     # [kg/s] valve-limited total demand
     valve_saturated: bool = field(init=False)       # [-] True if valve signal u is clamped at 1.0
@@ -48,7 +30,7 @@ class SteamGenerator:
     m_cmd_dyn_kg_s: float = field(init=False)        # [kg/s] lagged total steam command used by SG
     tau_valve_s: float = field(init=False)           # [s] first-order lag time constant
 
-    # Steam production / separator lag (delivered side)  <-- THIS MAKES P_sec MOVE
+    # Steam production / separator lag (delivered side)
     m_dot_dyn_kg_s: float = field(init=False)        # [kg/s] lagged delivered steam flow
     tau_sep_s: float = field(init=False)             # [s] steam separator / dome lag time constant
   
@@ -125,10 +107,6 @@ class SteamGenerator:
         m_cap_kg_s: float,
         T_min_K: float,
     ):
-        """
-        Single-loop algebraic SG calculation (Level 1).
-        Returns (T_cold_K, m_dot_steam_kg_s, loop_limited_bool)
-        """
 
         # Available primary heat above minimum cold-leg temperature (physical floor)
         dT_avail = T_hot_K - T_min_K  # [K]
@@ -179,18 +157,16 @@ class SteamGenerator:
     def step(self, T_hot_K: float, m_dot_steam_cmd_kg_s: float, dt: float):
         """
         Inputs:
-          T_hot_K [K]                 plant hot-leg temperature into SGs
-          m_dot_steam_cmd_kg_s [kg/s] turbine-requested TOTAL steam flow
-          dt [s]                      timestep
+          T_hot_K [K]: plant hot-leg temperature into SGs
+          m_dot_steam_cmd_kg_s [kg/s]: turbine-requested TOTAL steam flow
+          dt [s]: timestep
 
         Returns:
           (T_cold_K, m_dot_actual, P_sec_Pa, T_sec_K, sg_limited, h_steam_J_kg)
         """
         c = self.cfg
 
-        # -------------------------------
         # Pull required config numbers
-        # -------------------------------
         delta_h = self._safe_num(getattr(c, "delta_h_steam_fw_J_kg", None), 1.8e6)  # [J/kg]
         if (not math.isfinite(delta_h)) or (delta_h <= 0.0):
             delta_h = 1.8e6
@@ -201,8 +177,7 @@ class SteamGenerator:
 
         m_dot_pri_total = self._safe_num(getattr(c, "m_dot_primary_nom_kg_s", None), float("nan"))  # [kg/s]
         if (not math.isfinite(m_dot_pri_total)) or (m_dot_pri_total <= 0.0):
-            # Fallback: explicit nominal primary flow if config is missing
-            m_dot_pri_total = 1.0e4  # [kg/s] fallback nominal; tune or put in config when available
+            m_dot_pri_total = 1.0e4  # [kg/s]
 
         cp_pri = self._safe_num(getattr(c, "cp_coolant_J_kgK", None), 5500.0)  # [J/kg-K]
         if (not math.isfinite(cp_pri)) or (cp_pri <= 0.0):
@@ -227,9 +202,7 @@ class SteamGenerator:
             Th_safe = T_min
             T_hot_K = Th_safe
 
-        # ---------------------------------------------------------
-        # Steam demand -> internal valve signal u (OPTION A)
-        # ---------------------------------------------------------
+        # Steam demand -> internal valve signal u
         # Treat incoming command as turbine-requested TOTAL steam flow [kg/s]
         m_dem_total = m_dot_steam_cmd_kg_s
         if (not math.isfinite(m_dem_total)) or (m_dem_total < 0.0):
@@ -247,7 +220,7 @@ class SteamGenerator:
         u = max(0.0, min(1.0, u_raw))
         self.valve_saturated = (u >= 1.0 - 1e-12)
 
-        # Valve-limited steam demand (OPTION A)
+        # Valve-limited steam demand
         m_cmd_total = u * m_nom_total
         if not math.isfinite(m_cmd_total):
             m_cmd_total = 0.0
@@ -256,9 +229,7 @@ class SteamGenerator:
         self.steam_valve_u = u
         self.m_dot_valve_kg_s = m_cmd_total
 
-        # ---------------------------------------------------------
         # Valve / demand lag (creates mismatch so P_sec can move)
-        # ---------------------------------------------------------
         # First-order lag: m_cmd_dyn follows m_cmd_total with time constant tau_valve_s
         if (math.isfinite(dt)) and (dt > 0.0):
             tau = max(self._safe_pos(self.tau_valve_s), 1e-6)
@@ -267,16 +238,12 @@ class SteamGenerator:
                 alpha = 1.0
             self.m_cmd_dyn_kg_s += (m_cmd_total - self.m_cmd_dyn_kg_s) * alpha
         else:
-            # dt==0 init case: just sync
             self.m_cmd_dyn_kg_s = m_cmd_total
 
         # Use lagged command for the rest of SG math
         m_cmd_total = self._safe_pos(self.m_cmd_dyn_kg_s)
 
-
-        # -------------------------------
-        # Level 2: Split into Loop A / B
-        # -------------------------------
+        # Split into Loop A / B
         fA = self._safe_num(getattr(c, "sg_loopA_frac", None), 0.5)  # [-]
         if (not math.isfinite(fA)) or (fA <= 0.0) or (fA >= 1.0):
             fA = 0.5
@@ -291,9 +258,7 @@ class SteamGenerator:
         m_cap_A = self._safe_pos(m_nom_total) * fA  # [kg/s]
         m_cap_B = self._safe_pos(m_nom_total) * fB  # [kg/s]
 
-        # -------------------------------
-        # Level 1: Solve each loop algebraically
-        # -------------------------------
+        # Solve each loop algebraically
         T_cold_A, m_A, _ = self._loop_step(
             T_hot_K, m_cmd_A, m_pri_A, cp_pri, T_cold_target, delta_h, m_cap_A, T_min
         )
@@ -303,11 +268,9 @@ class SteamGenerator:
 
         m_total_alg = self._safe_pos(m_A) + self._safe_pos(m_B)  # [kg/s] algebraic steam generation
 
-        # ---------------------------------------------------------
         # Steam production / separator lag (delivered flow)
         # This prevents m_total from instantly equaling m_cmd_total,
         # so mismatch exists and P_sec responds.
-        # ---------------------------------------------------------
         if (math.isfinite(dt)) and (dt > 0.0):
             tau = max(self._safe_pos(self.tau_sep_s), 1e-6)
             alpha = dt / tau
@@ -315,7 +278,6 @@ class SteamGenerator:
                 alpha = 1.0
             self.m_dot_dyn_kg_s += (m_total_alg - self.m_dot_dyn_kg_s) * alpha
         else:
-            # dt==0 init case: just sync
             self.m_dot_dyn_kg_s = m_total_alg
 
         m_total = self._safe_pos(self.m_dot_dyn_kg_s)  # [kg/s] delivered steam flow used everywhere below
@@ -333,37 +295,22 @@ class SteamGenerator:
         if T_cold < T_min:
             T_cold = T_min
 
-        # System-level definition: SG is limiting if it cannot meet valve-limited demand
+        # SG is limiting if it cannot meet valve-limited demand
         tol = 1e-6 + 1e-4 * max(m_cmd_total, 0.0)
         
-        # Limitation should reflect physical ability (algebraic), not the separator lag
+        # Limitation should reflect physical ability
         sg_limited = (m_total_alg < (m_cmd_total - tol))
 
-        # Diagnostics: valve saturation vs heat/cap limitation
-        # valve_saturated -> turbine demanded above nominal (u clamped)
-        # sg_limited       -> SG couldn't meet valve-limited demand (heat/cap)
-
-        # -------------------------------
-        # Level 3: Bounded secondary pressure dynamics
-        # -------------------------------
-        # Pressure responds to steam mismatch (demand - actual).
-        # If demand > actual => positive mismatch => pressure DROOPS (more realistic).
-        # If demand < actual => negative mismatch => pressure rises.
-        #
-        # P_sec_cmd = P_nom - Kp * (m_cmd_total - m_actual_total)
-        # clamp P_sec_cmd to P_nom +/- dP_max
-        # dP/dt = (P_sec_cmd - P_sec)/tau_P
-        #
         P_nom = c.P_sec_nom_Pa  # [Pa]
         if (not math.isfinite(P_nom)) or (P_nom <= 0.0):
             P_nom = 5.764e6  # [Pa] fallback typical SG pressure
 
         Kp_P_per_kg_s = self._safe_num(getattr(c, "sg_KpP_Pa_per_kg_s", None), 3000.0)  # [Pa/(kg/s)]
         Kp_P_per_kg_s = max(Kp_P_per_kg_s, 0.0)
-        tau_P_s = self._safe_num(getattr(c, "sg_tauP_s", None), 5.0)                # [s]
-        dP_max_Pa = self._safe_num(getattr(c, "sg_dPmax_Pa", None), 0.5e6)  # [Pa]
-        P_min_Pa = self._safe_num(getattr(c, "sg_Pmin_Pa", None), 1.0e5)   # [Pa]
-        P_max_Pa = self._safe_num(getattr(c, "sg_Pmax_Pa", None), 25.0e6)  # [Pa]
+        tau_P_s = self._safe_num(getattr(c, "sg_tauP_s", None), 5.0)                    # [s]
+        dP_max_Pa = self._safe_num(getattr(c, "sg_dPmax_Pa", None), 0.5e6)              # [Pa]
+        P_min_Pa = self._safe_num(getattr(c, "sg_Pmin_Pa", None), 1.0e5)                # [Pa]
+        P_max_Pa = self._safe_num(getattr(c, "sg_Pmax_Pa", None), 25.0e6)               # [Pa]
         if (not math.isfinite(P_min_Pa)) or (P_min_Pa <= 0.0):
             P_min_Pa = 1.0e5
         
@@ -385,7 +332,7 @@ class SteamGenerator:
         if not math.isfinite(P_sec_cmd):
             P_sec_cmd = P_nom
       
-        # Clamp around nominal (prevents runaway)
+        # Clamp around nominal
         P_lo = P_nom - dP_max_Pa
         P_hi = P_nom + dP_max_Pa
         if P_lo > P_hi:
@@ -395,7 +342,6 @@ class SteamGenerator:
         if P_sec_cmd > P_hi:
             P_sec_cmd = P_hi
 
-        # Also respect absolute limits on the command (prevents clamp fighting)
         if P_sec_cmd < P_min_Pa:
             P_sec_cmd = P_min_Pa
         if P_sec_cmd > P_max_Pa:
@@ -416,26 +362,23 @@ class SteamGenerator:
         if self.P_sec_Pa > P_max_Pa:
             self.P_sec_Pa = P_max_Pa
 
-        # Optional linearized steam temperature response to pressure (default off)
-        # T_sec = T_nom + (dT/dP)*(P_sec - P_nom)
         dT_dP = self._safe_num(getattr(c, "sg_dT_dP_K_per_Pa", None), 0.0)  # [K/Pa]
         if not math.isfinite(dT_dP):
             dT_dP = 0.0
-        # sanity: prevent extreme slopes from unit mistakes (K/Pa)
+        # Prevent extreme slopes from unit mistakes (K/Pa)
         if abs(dT_dP) > 1.0e-3:
             dT_dP = 0.0
         self.T_sec_K = c.T_sec_nom_K + dT_dP * (self.P_sec_Pa - P_nom)  # [K]
         if not math.isfinite(self.T_sec_K):
             self.T_sec_K = c.T_sec_nom_K
-        # Hard sanity bounds (prevents nonsense if dT_dP is misconfigured)
+
         if self.T_sec_K < 200.0:
             self.T_sec_K = 200.0
         if self.T_sec_K > 1200.0:
             self.T_sec_K = 1200.0
 
-        # -------------------------------
-        # Update legacy/debug fields
-        # -------------------------------
+
+        # Update legacy fields
         self.m_dot_steam_kg_s = m_total
         self.m_dot_steam_A_kg_s = m_A
         self.m_dot_steam_B_kg_s = m_B
